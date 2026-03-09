@@ -1,0 +1,70 @@
+[paths]
+mascarade_repo = "/Users/electron/mascarade"
+core_base_url = "http://127.0.0.1:8100"
+apple_runtime_url = "http://127.0.0.1:8201"
+ollama_tags_url = "http://127.0.0.1:11435/api/tags"
+apple_model_ready_timeout_seconds = 30
+apple_model_poll_interval_seconds = 2
+
+[smoke]
+chapter = "02"
+intention = "Chapitre court. Une femme arrive dans une ville de nuit, trouve un indice simple, et finit sur une decision risquee. Style direct, phrases courtes, ton sobre."
+timeout_seconds = 300
+
+[preset]
+ANE_PROVIDER = "openai_compatible"
+ANE_BASE_URL = "http://127.0.0.1:8100"
+ANE_TIMEOUT = "300"
+ANE_MAX_TOKENS_STRUCTURE = "256"
+ANE_MAX_TOKENS_DRAFT = "768"
+ANE_MAX_TOKENS_CRITIQUE = "512"
+ANE_MAX_TOKENS_REWRITE = "768"
+ANE_MAX_TOKENS_GATE = "384"
+ANE_MAX_TOKENS_REPAIR = "512"
+ANE_MAX_TOKENS_MEMORY = "320"
+ANE_REPAIR_MAX_PASSES = "2"
+
+[ensure_models]
+apple_models = [
+  "qwen2.5-0.5b-instruct-onnx",
+  "qwen3.5-4b-onnx-q4f16",
+  "stateful-mistral7b-instruct-int4-coreml",
+]
+ollama_models = [
+  "qwen2.5:7b",
+  "qwen2.5:1.5b",
+]
+
+[lots.priority_models]
+models = [
+  "apple-coreml:qwen3.5-4b-onnx-q4f16",
+  "ollama:qwen2.5:7b",
+]
+
+[lots.baselines]
+models = [
+  "apple-coreml:qwen2.5-0.5b-instruct-onnx",
+  "ollama:qwen2.5:1.5b",
+]
+
+[lots.preflight_only]
+models = [
+  "apple-coreml:stateful-mistral7b-instruct-int4-coreml",
+]
+
+[tracking.ane]
+todo_active = "TODO_ACTIVE.md"
+todo_done = "TODO_IMPLEMENTE.md"
+plan = "docs/EXECUTION_PLAN_2026-03-08.md"
+comparison = "docs/MODEL_COMPARISON_2026-03-08.md"
+readme = "README.md"
+runbook = "docs/runbooks/LOCAL_GENERATION.md"
+
+[tracking.mascarade]
+todo = "TODO_AI_NOVEL_ENGINE.md"
+plan = "docs/EXECUTION_PLAN_2026-03-08.md"
+readme = "README.md"
+runbook = "docs/RUNBOOK_APPLE_LLM_LOCAL.md"
+
+[next_actions]
+rewrite_compaction = "Compacter ou reduire `rewrite_v1` et ses budgets pour faire passer au moins `apple-coreml:qwen3.5-4b-onnx-q4f16` ou `ollama:qwen2.5:7b` jusqu'a `gate`."

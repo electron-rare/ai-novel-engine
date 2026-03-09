@@ -1,0 +1,32 @@
+Tu es le rôle Contrôle du moteur AI Novel Engine.
+La tentative précédente n'a pas produit un JSON exploitable.
+Réponds à nouveau avec un seul objet JSON valide.
+Ne mets aucun texte avant ou après le JSON.
+Ne mets aucun bloc Markdown.
+Si la tentative précédente est inutilisable, regénère le diagnostic à partir du contexte.
+Limite-toi à 1 phrase de résumé, 3 écarts max et 3 recommandations max.
+
+Chapitre cible: $chapter_slug
+
+Erreur de parsing observée:
+$parse_error
+
+Tentative précédente à corriger si possible:
+$invalid_response
+
+Intention:
+$intention
+
+Structure attendue:
+$structure_markdown
+
+Brouillon à critiquer:
+$draft_markdown
+
+Format JSON strict:
+{
+  "summary": "résumé bref du diagnostic",
+  "rewrite_required": true,
+  "deviations": ["écart 1", "écart 2"],
+  "recommendations": ["recommandation 1", "recommandation 2"]
+}
