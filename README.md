@@ -113,3 +113,51 @@ Le script cree un workspace temporaire, ecrit une intention de test, lance la vr
 - lancer un cycle: `python3 scripts/run_next_lots.py --lot full`
 - checkpoint manuel en attente: Le runtime Apple sert `qwen2.5-0.5b-instruct-onnx` au lieu de `stateful-mistral7b-instruct-int4-coreml`.
 <!-- AUTO-SYNC:ANE-README:END -->
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<!-- CHANTIER:AUDIT START -->
+## Audit & Execution Plan (2026-03-10)
+
+### Snapshot
+- Priority: `P2`
+- Tech profile: `other`
+- Workflows: `yes`
+- Tests: `yes`
+- Debt markers: `23`
+- Source files: `18`
+
+### Corrections Prioritaires
+- [ ] Optimisation ciblée perf/maintenabilité
+- [ ] Ajouter/fiabiliser les commandes de vérification automatiques.
+- [ ] Clore les points bloquants avant optimisation avancée.
+
+### Optimisation
+- [ ] Identifier le hotspot principal et mesurer avant/après.
+- [ ] Réduire la complexité des modules les plus touchés.
+
+### Mémoire chantier
+- Control plane: `/Users/electron/.codex/memories/electron_rare_chantier`
+- Repo card: `/Users/electron/.codex/memories/electron_rare_chantier/REPOS/ai-novel-engine.md`
+
+<!-- CHANTIER:AUDIT END -->
