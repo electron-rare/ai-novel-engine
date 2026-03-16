@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import argparse
 from pathlib import Path
 import sys
@@ -110,9 +109,6 @@ def cmd_intention_create(root: Path, chapter_value: str | None = None, input_fun
     intentions_dir.mkdir(parents=True, exist_ok=True)
 
     raw_chapter = chapter_value or input_func("Numéro du chapitre (ex: 08) : ").strip()
-    if not re.match(r'^[a-zA-Z0-9_]+$', raw_chapter):
-        print("Numéro de chapitre invalide (alphanumériques et _ uniquement).")
-        return 1
     chapter = ChapterId.parse(raw_chapter)
 
     path = resolve_chapter_file(intentions_dir, chapter)
@@ -120,7 +116,7 @@ def cmd_intention_create(root: Path, chapter_value: str | None = None, input_fun
         print(f"Une intention existe déjà : {path}")
         return 1
 
-    print("\nDécris l'intention (finir par Ctrl+D / Ctrl+Z):\n")
+    print("\nDécris l’intention (finir par Ctrl+D / Ctrl+Z):\n")
     lines = []
     try:
         while True:
