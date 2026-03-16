@@ -91,6 +91,15 @@ Regle:
 - [x] `ollama:qwen2.5:7b` atteint `gate`, exerce `repair` en live sur deux passes, puis finit `quality_blocked` avec `outline_like`
 - [x] Le comparatif local, les TODOs, les README et les runbooks disposent maintenant d'un premier resultat `accepted` sous protocole courant
 
+### Lot livre - 13 mars 2026 (reprise et durcissement prose)
+- [x] `tracking_sync` consolide maintenant les derniers verdicts connus par modele depuis `automation/reports/*/run.json`
+- [x] Normalisation legere des sorties prose pour retirer les code fences et titres `# Chapitre` avant garde-fou
+- [x] Heuristique `outline_like` renforcee pour mieux detecter headings, listes, titres et labels structurants
+- [x] Prompts `draft_v1`, `rewrite_v1`, `repair_v1` et `gate_v1` resserres contre `outline_like` et `truncated_ending`
+- [x] Le rerun comparable `automation/reports/apple_rerun_preset_20260313T223555Z` passe `accepted` sans `repair` et reconfirme la reference Apple locale
+- [x] Etat automatise `baselines` clos proprement; `stateful-mistral7b-instruct-int4-coreml` sort du chemin critique
+- [x] Suite unitaire etendue a 43 tests verts
+
 ## Actif
 - [x] Aucun suivi actif ici. Voir `TODO_ACTIVE.md`.
 
@@ -101,10 +110,9 @@ Regle:
 - [x] Mettre a jour ce fichier uniquement quand un nouveau lot est reellement termine.
 
 ## Auto-sync
-## Auto-sync
 <!-- AUTO-SYNC:ANE-TODO-DONE:START -->
 - orchestrateur `scripts/run_next_lots.py` disponible
 - manifeste `automation/next_lots.toml` charge
 - derniers fichiers de suivi synchronisables via marqueurs `AUTO-SYNC`
-- dernier cycle automatise observe: 2026-03-09T06:53:02+00:00
+- dernier cycle automatise observe: 2026-03-14T14:03:06+00:00
 <!-- AUTO-SYNC:ANE-TODO-DONE:END -->

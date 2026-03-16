@@ -287,6 +287,55 @@ class GenerationPipeline:
             return text
         return f"{text[:limit].rstrip()}\n[...]"
 
+    def _normalize_generated_prose(self, text: str) -> str:
+        payload = text.strip()
+        if not payload:
+            return ""
+
+        if payload.startswith("```"):
+            lines = payload.splitlines()
+            if len(lines) >= 3 and lines[-1].strip() == "```":
+                payload = "\n".join(lines[1:-1]).strip()
+
+        cleaned_lines: list[str] = []
+        for raw_line in payload.splitlines():
+            stripped = raw_line.strip()
+            if not stripped:
+                cleaned_lines.append("")
+                continue
+            if stripped in {"```", "```markdown", "```md"}:
+                continue
+            if stripped == "---":
+                continue
+            if re.match(r"^#\s+(chapitre|chapter)\b", stripped, flags=re.IGNORECASE):
+                continue
+            cleaned_lines.append(raw_line)
+
+        normalized = "\n".join(cleaned_lines).strip()
+        return f"{normalized}\n" if normalized else ""
+
+    def _repair_focus(self, gate_report: ManuscriptGateReport) -> str:
+        blockers = set(gate_report.all_blockers())
+        focus: list[str] = []
+        if "outline_like" in blockers:
+            focus.append(
+                "- priorite absolue: supprimer toute ecriture qui resume ou annonce la scene; montrer l'action, la perception, la decision et la consequence au lieu de les lister"
+            )
+            focus.append(
+                "- chaque paragraphe doit faire avancer concretement la situation; eviter les intitulés, les titres de chapitre et les transitions meta"
+            )
+        if "truncated_ending" in blockers:
+            focus.append(
+                "- la derniere scene doit se fermer sur une decision nette et sa consequence immediate, dans une phrase pleinement terminee"
+            )
+        if "too_short" in blockers:
+            focus.append(
+                "- viser au moins 4 paragraphes utiles pour obtenir une scene complete, pas un resume raccourci"
+            )
+        if not focus:
+            focus.append("- conserver une prose continue, concrete et entierement narrative")
+        return "\n".join(focus)
+
     def _generate_structure(
         self,
         provider: GenerationProvider,
@@ -332,10 +381,10 @@ class GenerationPipeline:
             "Génération du brouillon initial en cours.",
         )
         response = provider.generate(GenerationRequest(stage="draft", prompt=prompt, temperature=0.4))
-        draft = response.content.strip()
+        draft = self._normalize_generated_prose(response.content)
         if not draft:
             raise ProviderError("Le provider a renvoyé un brouillon vide.")
-        return f"{draft}\n"
+        return draft
 
     def _generate_control_report(
         self,
@@ -392,10 +441,10 @@ class GenerationPipeline:
             "Réécriture guidée par la critique en cours.",
         )
         response = provider.generate(GenerationRequest(stage="rewrite", prompt=prompt, temperature=0.3))
-        draft = response.content.strip()
+        draft = self._normalize_generated_prose(response.content)
         if not draft:
             raise ProviderError("Le provider a renvoyé une réécriture vide.")
-        return f"{draft}\n"
+        return draft
 
     def _repair_until_ready(
         self,
@@ -471,6 +520,7 @@ class GenerationPipeline:
             gate_json=gate_report.to_dict(),
             repair_attempt=attempt,
             repair_model=repair_model or "",
+            repair_focus=self._repair_focus(gate_report),
             story_context=context.story_context,
         )
         model_label = repair_model or self._provider_model_name(provider) or "provider_courant"
@@ -481,10 +531,10 @@ class GenerationPipeline:
             f"Réparation prose v{attempt} en cours avec {model_label}.",
         )
         response = provider.generate(GenerationRequest(stage="repair", prompt=prompt, temperature=0.2))
-        repaired = response.content.strip()
+        repaired = self._normalize_generated_prose(response.content)
         if not repaired:
             raise ProviderError("Le provider a renvoyé une réparation vide.")
-        return f"{repaired}\n"
+        return repaired
 
     def _generate_manuscript_gate_report(
         self,
@@ -563,6 +613,8 @@ class GenerationPipeline:
 
         override = os.environ.get("ANE_REPAIR_FALLBACK_MODEL", "").strip()
         candidate = override or self._default_repair_fallback_model(base_model) or base_model
+        if not override and self._model_provider_name(candidate) != self._model_provider_name(base_model):
+            candidate = base_model
         if self._is_cross_apple_runtime_switch(base_model, candidate):
             raise ProviderError(
                 "ANE_REPAIR_FALLBACK_MODEL ne peut pas viser un autre modèle apple-coreml pendant un même smoke. "
@@ -586,6 +638,13 @@ class GenerationPipeline:
         if base_model == candidate:
             return False
         return base_model.startswith("apple-coreml:") and candidate.startswith("apple-coreml:")
+
+    def _model_provider_name(self, model: str | None) -> str | None:
+        if not model or ":" not in model:
+            return None
+        provider, _ = model.split(":", 1)
+        provider = provider.strip()
+        return provider or None
 
     def _heuristic_gate_report(self, draft_v2: str) -> ManuscriptGateReport | None:
         blockers: list[str] = []
@@ -630,16 +689,31 @@ class GenerationPipeline:
             stripped = line.strip()
             if not stripped:
                 continue
-            if stripped.startswith("## "):
-                detected_markers.add("heading_level_2")
-            if stripped.startswith("### "):
-                detected_markers.add("heading_level_3")
-            if stripped.startswith("- "):
-                detected_markers.add("bullet_list")
             lowered = stripped.lower()
-            if "**objectif**" in lowered or "**conflit**" in lowered or "**sortie**" in lowered:
+            if stripped.startswith("```"):
+                detected_markers.add("fenced_block")
+            if re.match(r"^#{1,6}\s", stripped):
+                detected_markers.add("heading")
+            if stripped == "---":
+                detected_markers.add("horizontal_rule")
+            if stripped.startswith(("- ", "* ")):
+                detected_markers.add("bullet_list")
+            if re.match(r"^\d+[.)]\s", stripped):
+                detected_markers.add("numbered_list")
+            if (
+                "**objectif**" in lowered
+                or "**conflit**" in lowered
+                or "**sortie**" in lowered
+                or "objectif:" in lowered
+                or "conflit:" in lowered
+                or "sortie:" in lowered
+            ):
                 detected_markers.add("scene_fields")
-            if "scène" in lowered or "scene" in lowered:
+            if re.match(r"^#{0,6}\s*(objectif dramatique|tension|scènes?|scenes?)\b", lowered):
+                detected_markers.add("structure_label")
+            if re.match(r"^#{0,6}\s*chapitre\b", lowered):
+                detected_markers.add("chapter_title")
+            if "scène" in lowered or "scene" in lowered or "— titre" in lowered:
                 detected_markers.add("scene_heading")
             if len(detected_markers) >= 2:
                 return True

@@ -23,10 +23,14 @@ $draft_markdown
 Consignes impératives:
 - répondre uniquement avec la nouvelle version du chapitre en Markdown
 - produire uniquement de la prose narrative continue en paragraphes
-- ne garder aucun titre, aucune puce, aucune numérotation, aucun label de plan visible
+- ne garder aucun titre, aucune puce, aucune numérotation, aucun code fence, aucun titre `Chapitre XX`, aucun label de plan visible
 - supprimer completement les mots `objectif`, `conflit`, `sortie`, `Scène`, `scene`, `Tension` s'ils apparaissent comme labels ou sous-titres
 - transformer toute structure, note ou checklist en scene(s) jouee(s) avec actions, perceptions et consequences
 - conserver l'intention et les informations utiles deja presentes
 - allonger si besoin pour obtenir une scene complete et continue
+- montrer la scene au lieu de la resumer depuis l'exterieur
+- chaque paragraphe doit produire une action, une reaction ou une consequence concrete
+- finir le dernier paragraphe sur une decision nette suivie d'une consequence immediate
+$repair_focus
 - finir obligatoirement sur une vraie phrase complete avec une ponctuation finale
 - ne rien ajouter avant ou apres le chapitre

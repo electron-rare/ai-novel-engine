@@ -16,11 +16,12 @@ Consignes:
 - répondre uniquement avec le chapitre en Markdown
 - produire uniquement de la prose narrative continue, sous forme de paragraphes
 - ne jamais recopier la structure sous forme de plan
-- interdit: titres Markdown (`#`, `##`, `###`), listes a puces, numerotations, labels `objectif`, `conflit`, `sortie`, section `Tension`, section `Scènes`, code fences
+- interdit: titres Markdown (`#`, `##`, `###`), listes a puces, numerotations, labels `objectif`, `conflit`, `sortie`, section `Tension`, section `Scènes`, code fences, titre `Chapitre XX`
 - garder une voix cohérente
 - matérialiser la tension annoncée
 - ouvrir directement dans l'action ou dans la scene, sans preambule meta
 - transformer chaque beat de structure en action, perception, decision, consequence et, si utile, dialogue
+- ne pas commenter la structure ni annoncer les scenes; les jouer directement
 - finir sur une vraie phrase complete avec une ponctuation finale
 - viser un chapitre bref mais complet, d'au moins 3 paragraphes substantiels
 - ne pas ajouter d'explication hors texte narratif

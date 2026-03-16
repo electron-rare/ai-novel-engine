@@ -4,7 +4,9 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, replace
 import json
 import os
+import random
 import socket
+import time
 from typing import Mapping
 from urllib import error, request
 
@@ -146,26 +148,50 @@ class OpenAICompatibleProvider(GenerationProvider):
             method="POST",
         )
 
-        try:
-            with request.urlopen(http_request, timeout=self.config.timeout) as response:
-                raw_payload = json.loads(response.read().decode("utf-8"))
-        except error.HTTPError as exc:
-            details = exc.read().decode("utf-8", errors="replace")
+        _RETRYABLE_HTTP_CODES = {429, 500, 502, 503}
+        _MAX_RETRIES = 3
+        _BASE_DELAY = 1.0
+        _MAX_DELAY = 10.0
+
+        last_exc: Exception | None = None
+        for attempt in range(_MAX_RETRIES):
+            try:
+                with request.urlopen(http_request, timeout=self.config.timeout) as response:
+                    raw_payload = json.loads(response.read().decode("utf-8"))
+                break
+            except error.HTTPError as exc:
+                if exc.code in _RETRYABLE_HTTP_CODES and attempt < _MAX_RETRIES - 1:
+                    last_exc = exc
+                    delay = min(_BASE_DELAY * (2 ** attempt), _MAX_DELAY)
+                    delay += random.uniform(0, delay * 0.25)
+                    time.sleep(delay)
+                    continue
+                details = exc.read().decode("utf-8", errors="replace")
+                raise ProviderError(
+                    f"Le provider a répondu avec HTTP {exc.code} pendant l'étape '{prompt_request.stage}': {details}"
+                ) from exc
+            except (error.URLError, TimeoutError, socket.timeout) as exc:
+                if attempt < _MAX_RETRIES - 1:
+                    last_exc = exc
+                    delay = min(_BASE_DELAY * (2 ** attempt), _MAX_DELAY)
+                    delay += random.uniform(0, delay * 0.25)
+                    time.sleep(delay)
+                    continue
+                if isinstance(exc, error.URLError):
+                    raise ProviderError(
+                        f"Impossible de joindre le provider pendant l'étape '{prompt_request.stage}': {exc.reason}"
+                    ) from exc
+                raise ProviderError(
+                    f"Timeout du provider pendant l'étape '{prompt_request.stage}' après {self.config.timeout:.0f}s."
+                ) from exc
+            except json.JSONDecodeError as exc:
+                raise ProviderError(
+                    f"Réponse non JSON du provider pendant l'étape '{prompt_request.stage}'."
+                ) from exc
+        else:
             raise ProviderError(
-                f"Le provider a répondu avec HTTP {exc.code} pendant l'étape '{prompt_request.stage}': {details}"
-            ) from exc
-        except error.URLError as exc:
-            raise ProviderError(
-                f"Impossible de joindre le provider pendant l'étape '{prompt_request.stage}': {exc.reason}"
-            ) from exc
-        except (TimeoutError, socket.timeout) as exc:
-            raise ProviderError(
-                f"Timeout du provider pendant l'étape '{prompt_request.stage}' après {self.config.timeout:.0f}s."
-            ) from exc
-        except json.JSONDecodeError as exc:
-            raise ProviderError(
-                f"Réponse non JSON du provider pendant l'étape '{prompt_request.stage}'."
-            ) from exc
+                f"Le provider a échoué après {_MAX_RETRIES} tentatives pendant l'étape '{prompt_request.stage}'."
+            ) from last_exc
 
         try:
             choice = raw_payload["choices"][0]

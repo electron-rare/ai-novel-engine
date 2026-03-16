@@ -20,7 +20,9 @@ v2 — développement en cours (open-source)
 ## Suivi
 - backlog actif: [`TODO_ACTIVE.md`](./TODO_ACTIVE.md)
 - etat livre: [`TODO_IMPLEMENTE.md`](./TODO_IMPLEMENTE.md)
-- ordre d'execution recommande: [`docs/EXECUTION_PLAN_2026-03-08.md`](./docs/EXECUTION_PLAN_2026-03-08.md)
+- contexte courant: [`docs/CONTEXTE_PROJET_2026-03-14.md`](./docs/CONTEXTE_PROJET_2026-03-14.md)
+- memoire de reprise: [`docs/MEMOIRE_REPRISE_2026-03-14.md`](./docs/MEMOIRE_REPRISE_2026-03-14.md)
+- ordre d'execution recommande: [`docs/EXECUTION_PLAN_2026-03-14.md`](./docs/EXECUTION_PLAN_2026-03-14.md)
 - runbook local: [`docs/runbooks/LOCAL_GENERATION.md`](./docs/runbooks/LOCAL_GENERATION.md)
 - comparatif modeles local: [`docs/MODEL_COMPARISON_2026-03-08.md`](./docs/MODEL_COMPARISON_2026-03-08.md)
 
@@ -34,7 +36,10 @@ python3 scripts/run_next_lots.py --lot full
 
 Points clés:
 - le manifeste versionné est `automation/next_lots.toml`
+- `paths.ollama_runtime = "native"` garde le preflight Ollama natif avant smoke
+- `paths.ollama_runtime = "openai_compatible"` saute ce preflight et envoie `ollama:*` vers `paths.ollama_openai_base_url`
 - le driver réutilise les smokes existants au lieu de dupliquer le pipeline
+- `tracking_sync` consolide maintenant les derniers verdicts connus par modele a partir de `automation/reports/*/run.json`
 - les opérations sensibles restent semi-autos: en cas de switch Apple ou de restart runtime, le cycle prépare les commandes exactes puis s'arrête avec un état de reprise
 - reprise:
 
@@ -85,13 +90,18 @@ Notes :
 - `ANE_REPAIR_FALLBACK_MODEL` permet de forcer le modele du second passage `repair`
 - le pipeline narratif reste entierement dans `ai-novel-engine`
 - `mascarade` sert uniquement de runtime local et de couche OpenAI-compatible
+- au 13 mars 2026 au soir, `:8100` et `:8201` sont remontes, et `http://127.0.0.1:11434/api/tags` repond de nouveau
+- le vrai blocage restant n'est plus un service eteint mais `ollama` natif 0.17.7, qui echoue encore en generation sur `qwen2.5:7b` et `qwen2.5:1.5b` avec une erreur Metal
+- le rerun Apple comparable `automation/reports/apple_rerun_7oY51o` reste utile comme incident historique: il a ete bloque a `gate` sur `too_short` + `truncated_ending`, puis a casse sur l'ancien fallback `repair` vers Ollama
+- le rerun comparable `automation/reports/apple_rerun_preset_20260313T223555Z` est `accepted` le 13 mars 2026 avec `323` mots et `repair_attempts=0`; la reference Apple locale est donc reconfirmee
 - dernier cycle complet termine au 9 mars 2026 :
   - `apple-coreml:qwen3.5-4b-onnx-q4f16` est `accepted` de bout en bout sous garde-fou
   - `ollama:qwen2.5:7b` atteint `gate`, exerce `repair` en live, puis finit `quality_blocked` sur `outline_like`
-  - `apple-coreml:stateful-mistral7b-instruct-int4-coreml` reste `preflight_only`
-- les baselines `apple-coreml:qwen2.5-0.5b-instruct-onnx` et `ollama:qwen2.5:1.5b` sont en rerun automatise separe; ils ne sont plus la reference locale courante
+- `apple-coreml:stateful-mistral7b-instruct-int4-coreml` est sorti du chemin critique; il reste archive comme piste experimentale
+- les baselines `apple-coreml:qwen2.5-0.5b-instruct-onnx` et `ollama:qwen2.5:1.5b` ont ete rejouees et finissent actuellement `quality_blocked` sur `truncated_ending`
 - le smoke et `status` exposent maintenant `gate_v1.json`, `quality_blockers`, `failed_stage`, `repair_attempts` et `repair_models`
 - le runtime Apple local ne sert qu'un `model_id` a la fois; un fallback `repair` vers un autre modele Apple exige donc un switch de service entre runs
+- par defaut, le second passage `repair` reste maintenant sur le meme provider; `ANE_REPAIR_FALLBACK_MODEL` sert seulement a forcer un switch explicite
 
 Smoke test local rapide :
 
@@ -105,37 +115,12 @@ Smoke test local rapide :
 Le script cree un workspace temporaire, ecrit une intention de test, lance la vraie CLI publique, fait un warm-up automatique pour `apple-coreml`, puis affiche un resume humain des artefacts et du `meta.json`. En mode `apple-coreml`, il applique par defaut un timeout plus large (`ANE_TIMEOUT=900`) et des budgets de smoke plus courts pour eviter de faire exploser la latence locale. Pour les reruns qualitatifs de reference, fixer explicitement `--timeout 300` et des budgets `ANE_MAX_TOKENS_*` communs. Utiliser `--workspace`, `--chapter`, `--intention`, `--timeout`, `--approve` ou `--reject` si besoin.
 
 ## Etat auto-synchronise
-## Etat auto-synchronise
 <!-- AUTO-SYNC:ANE-README:START -->
-- dernier cycle automatise: 2026-03-09T06:53:02+00:00
-- reference locale actuelle: aucun accepted, meilleur diagnostic: apple-coreml:qwen2.5-0.5b-instruct-onnx
-- prochain lot utile: Analyser les runs ayant atteint gate/repair puis resserrer la reference locale autour des meilleurs candidats.
+- dernier cycle automatise: 2026-03-14T14:03:06+00:00
+- reference locale actuelle: apple-coreml:qwen3.5-4b-onnx-q4f16
+- prochain lot utile: Reference locale reconfirmee; retablir le runtime des modeles provider_failed puis reprendre rewrite/repair sur les modeles bloques a gate.
 - lancer un cycle: `python3 scripts/run_next_lots.py --lot full`
-- checkpoint manuel en attente: Le runtime Apple sert `qwen2.5-0.5b-instruct-onnx` au lieu de `stateful-mistral7b-instruct-int4-coreml`.
 <!-- AUTO-SYNC:ANE-README:END -->
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 <!-- CHANTIER:AUDIT START -->
 ## Audit & Execution Plan (2026-03-10)
 

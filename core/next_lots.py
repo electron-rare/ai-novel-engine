@@ -3,9 +3,11 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+import inspect
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import time
 import tomllib
@@ -55,6 +57,8 @@ class Manifest:
     core_base_url: str
     apple_runtime_url: str
     ollama_tags_url: str
+    ollama_runtime: str
+    ollama_openai_base_url: str
     apple_model_ready_timeout_seconds: float
     apple_model_poll_interval_seconds: float
     smoke_chapter: str
@@ -77,6 +81,11 @@ class Manifest:
         tracking = payload["tracking"]
         lots = payload["lots"]
         ensure_models = payload["ensure_models"]
+        ollama_runtime = str(paths.get("ollama_runtime", "native")).strip() or "native"
+        if ollama_runtime not in {"native", "openai_compatible"}:
+            raise NextLotsError(
+                "paths.ollama_runtime doit valoir 'native' ou 'openai_compatible'."
+            )
 
         mascarade_repo = Path(paths["mascarade_repo"]).expanduser()
         return cls(
@@ -98,6 +107,10 @@ class Manifest:
             core_base_url=str(paths["core_base_url"]).rstrip("/"),
             apple_runtime_url=str(paths["apple_runtime_url"]).rstrip("/"),
             ollama_tags_url=str(paths["ollama_tags_url"]).rstrip("/"),
+            ollama_runtime=ollama_runtime,
+            ollama_openai_base_url=str(
+                paths.get("ollama_openai_base_url", paths["core_base_url"])
+            ).rstrip("/"),
             apple_model_ready_timeout_seconds=float(paths.get("apple_model_ready_timeout_seconds", 30)),
             apple_model_poll_interval_seconds=float(paths.get("apple_model_poll_interval_seconds", 2)),
             smoke_chapter=str(smoke["chapter"]),
@@ -122,7 +135,7 @@ class CommandResult:
     duration_seconds: float
 
 
-CommandRunner = Callable[[list[str], Path, dict[str, str] | None], CommandResult]
+CommandRunner = Callable[..., CommandResult]
 JsonFetcher = Callable[[str, float], Any]
 
 
@@ -217,19 +230,38 @@ def _timestamp() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
-def _default_command_runner(args: list[str], cwd: Path, env: dict[str, str] | None = None) -> CommandResult:
+def _default_command_runner(
+    args: list[str],
+    cwd: Path,
+    env: dict[str, str] | None = None,
+    timeout_seconds: float | None = None,
+) -> CommandResult:
     merged_env = os.environ.copy()
     if env:
         merged_env.update(env)
     started = time.monotonic()
-    completed = subprocess.run(
-        args,
-        cwd=str(cwd),
-        env=merged_env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            args,
+            cwd=str(cwd),
+            env=merged_env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout.decode("utf-8", errors="replace") if exc.stdout else "")
+        stderr = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr.decode("utf-8", errors="replace") if exc.stderr else "")
+        detail = f"Timed out after {timeout_seconds:.1f}s." if timeout_seconds is not None else "Timed out."
+        stderr = f"{stderr}\n{detail}".strip()
+        return CommandResult(
+            args=args,
+            returncode=124,
+            stdout=stdout,
+            stderr=stderr,
+            duration_seconds=time.monotonic() - started,
+        )
     return CommandResult(
         args=args,
         returncode=completed.returncode,
@@ -267,7 +299,67 @@ def replace_auto_section(path: Path, marker_name: str, heading: str, body: str) 
     else:
         suffix = "\n" if text.endswith("\n") else "\n\n"
         new_text = f"{text}{suffix}{section}"
+    repeated_heading_pattern = rf"(?:{re.escape(heading)}\n){{2,}}"
+    new_text = re.sub(repeated_heading_pattern, f"{heading}\n", new_text)
     path.write_text(new_text, encoding="utf-8")
+
+
+def _safe_timestamp(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return datetime.fromtimestamp(0, tz=timezone.utc)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _load_report_history(reports_root: Path) -> list[RunState]:
+    history: list[RunState] = []
+    if not reports_root.exists():
+        return history
+    for run_path in sorted(reports_root.glob("*/run.json")):
+        try:
+            history.append(RunState.load(run_path))
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            continue
+    history.sort(key=lambda item: (_safe_timestamp(item.updated_at), item.report_dir))
+    return history
+
+
+def _result_sort_key(result: ModelRunResult) -> tuple[int, str, str]:
+    category_order = {
+        "priority_models": 0,
+        "baselines": 1,
+        "preflight_only": 2,
+        "runtime_preflight": 3,
+    }
+    provider = result.model.split(":", 1)[0]
+    return (category_order.get(result.category, 9), provider, result.model)
+
+
+def _consolidated_tracking_results(state: RunState, reports_root: Path) -> list[ModelRunResult]:
+    latest_by_model: dict[str, tuple[tuple[datetime, int], ModelRunResult]] = {}
+    sequence = 0
+    for snapshot in [*_load_report_history(reports_root), state]:
+        stamp = _safe_timestamp(snapshot.updated_at)
+        for result in snapshot.typed_results():
+            candidate_key = (stamp, sequence)
+            current = latest_by_model.get(result.model)
+            if current is None or candidate_key >= current[0]:
+                latest_by_model[result.model] = (candidate_key, result)
+            sequence += 1
+    return sorted((payload[1] for payload in latest_by_model.values()), key=_result_sort_key)
+
+
+def _accepted_history_counts(state: RunState, reports_root: Path) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for snapshot in [*_load_report_history(reports_root), state]:
+        for result in snapshot.typed_results():
+            if result.classification != "accepted":
+                continue
+            counts[result.model] = counts.get(result.model, 0) + 1
+    return counts
 
 
 class NextLotsRunner:
@@ -281,6 +373,7 @@ class NextLotsRunner:
         self.manifest = manifest
         self.command_runner = command_runner
         self.json_fetcher = json_fetcher
+        self._command_runner_supports_timeout = len(inspect.signature(command_runner).parameters) >= 4
 
     def run(
         self,
@@ -381,7 +474,7 @@ class NextLotsRunner:
             state.notes.append("Dry-run: ensure_models non exécuté.")
             return
         args = ["bash", "scripts/ensure_apple_models.sh"]
-        result = self.command_runner(args, self.manifest.tracking.mascarade_repo)
+        result = self._invoke_command(args, self.manifest.tracking.mascarade_repo, timeout_seconds=900)
         log_path = Path(state.report_dir) / "ensure_models.log"
         log_path.write_text(_command_log(result), encoding="utf-8")
         if result.returncode != 0:
@@ -471,7 +564,7 @@ class NextLotsRunner:
         )
 
     def _build_manual_action(self, state: RunState, *, args: list[str], reason: str) -> dict[str, Any]:
-        result = self.command_runner(args, self.manifest.tracking.mascarade_repo)
+        result = self._invoke_command(args, self.manifest.tracking.mascarade_repo, timeout_seconds=300)
         log_path = Path(state.report_dir) / f"manual_action_{len(state.results):02d}.log"
         log_path.write_text(_command_log(result), encoding="utf-8")
         return {
@@ -514,20 +607,123 @@ class NextLotsRunner:
                 return last_seen
         return last_seen
 
+    def _ollama_base_url(self) -> str:
+        tags_url = self.manifest.ollama_tags_url.rstrip("/")
+        suffix = "/api/tags"
+        if tags_url.endswith(suffix):
+            return tags_url[: -len(suffix)]
+        return tags_url
+
+    def _openai_base_url_for_model(self, model: str) -> str:
+        if model.startswith("ollama:") and self.manifest.ollama_runtime == "openai_compatible":
+            return self.manifest.ollama_openai_base_url
+        return self.manifest.core_base_url
+
+    def _should_run_ollama_native_preflight(self, model: str) -> bool:
+        return model.startswith("ollama:") and self.manifest.ollama_runtime == "native"
+
+    def _run_ollama_native_preflight(self, model: str) -> CommandResult:
+        timeout_seconds = min(45.0, float(self._timeout_for_model(f"ollama:{model}")))
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": "Respond with exactly: ollama native preflight ok"}],
+            "stream": False,
+            "options": {
+                "temperature": 0,
+                "num_predict": 16,
+            },
+        }
+        body = json.dumps(payload).encode("utf-8")
+        started = time.monotonic()
+        try:
+            req = request.Request(
+                f"{self._ollama_base_url()}/api/chat",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with request.urlopen(req, timeout=timeout_seconds) as response:
+                raw_payload = response.read().decode("utf-8")
+        except error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            return CommandResult(
+                args=["ollama-native-preflight", model],
+                returncode=1,
+                stdout="",
+                stderr=f"HTTP {exc.code} {exc.reason}\n{detail}".strip(),
+                duration_seconds=time.monotonic() - started,
+            )
+        except Exception as exc:
+            return CommandResult(
+                args=["ollama-native-preflight", model],
+                returncode=1,
+                stdout="",
+                stderr=f"{type(exc).__name__}: {exc}",
+                duration_seconds=time.monotonic() - started,
+            )
+        try:
+            parsed = json.loads(raw_payload)
+        except json.JSONDecodeError:
+            parsed = {"raw": raw_payload}
+        preview = {
+            "model": parsed.get("model"),
+            "content": (parsed.get("message") or {}).get("content", ""),
+            "done_reason": parsed.get("done_reason"),
+        }
+        return CommandResult(
+            args=["ollama-native-preflight", model],
+            returncode=0,
+            stdout=json.dumps(preview, ensure_ascii=False, indent=2),
+            stderr="",
+            duration_seconds=time.monotonic() - started,
+        )
+
+    def _invoke_command(
+        self,
+        args: list[str],
+        cwd: Path,
+        *,
+        env: dict[str, str] | None = None,
+        timeout_seconds: float | None = None,
+    ) -> CommandResult:
+        if self._command_runner_supports_timeout:
+            return self.command_runner(args, cwd, env, timeout_seconds)
+        return self.command_runner(args, cwd, env)
+
     def _run_model(self, model: str, *, category: str, preflight_only: bool, report_dir: Path) -> ModelRunResult:
         result = ModelRunResult(model=model, category=category, apple_model_active=self._current_apple_model())
         model_slug = _slugify(model)
+        openai_base_url = self._openai_base_url_for_model(model)
+        if self._should_run_ollama_native_preflight(model):
+            native_preflight = self._run_ollama_native_preflight(model.split(":", 1)[1])
+            if native_preflight.returncode != 0:
+                result.preflight_duration_seconds = native_preflight.duration_seconds
+                native_log = report_dir / f"{model_slug}_ollama_native_preflight.log"
+                native_log.write_text(_command_log(native_preflight), encoding="utf-8")
+                result.preflight_log = str(native_log)
+                result.preflight_ok = False
+                result.classification = "provider_failed"
+                result.status = "ollama_runtime_unhealthy"
+                result.notes.append("Le preflight Ollama natif a échoué.")
+                hint = _runtime_error_hint(native_preflight.stderr)
+                if hint:
+                    result.notes.append(hint)
+                return result
         preflight_args = [
             "bash",
             "scripts/smoke_openai_compat_ane.sh",
             "--url",
-            self.manifest.core_base_url,
+            openai_base_url,
             "--model",
             model,
             "--timeout",
             str(self._timeout_for_model(model)),
         ]
-        preflight = self.command_runner(preflight_args, self.manifest.tracking.mascarade_repo)
+        preflight = self._invoke_command(
+            preflight_args,
+            self.manifest.tracking.mascarade_repo,
+            timeout_seconds=float(self._timeout_for_model(model) + 30),
+        )
         result.preflight_duration_seconds = preflight.duration_seconds
         preflight_log = report_dir / f"{model_slug}_preflight.log"
         preflight_log.write_text(_command_log(preflight), encoding="utf-8")
@@ -550,7 +746,7 @@ class NextLotsRunner:
             "bash",
             "scripts/smoke_local_generation.sh",
             "--base-url",
-            self.manifest.core_base_url,
+            openai_base_url,
             "--model",
             model,
             "--chapter",
@@ -563,7 +759,12 @@ class NextLotsRunner:
             self.manifest.smoke_intention,
             "--approve",
         ]
-        smoke = self.command_runner(smoke_args, self.manifest.repo_root, env=self.manifest.preset_env)
+        smoke = self._invoke_command(
+            smoke_args,
+            self.manifest.repo_root,
+            env=self.manifest.preset_env,
+            timeout_seconds=float(self.manifest.smoke_timeout_seconds + 60),
+        )
         result.smoke_attempted = True
         result.smoke_duration_seconds = smoke.duration_seconds
         smoke_log = report_dir / f"{model_slug}_smoke.log"
@@ -614,11 +815,22 @@ class NextLotsRunner:
         if dry_run:
             self._write_report_summary(state)
             return
-        typed_results = state.typed_results()
+        typed_results = _consolidated_tracking_results(
+            state,
+            self.manifest.repo_root / "automation" / "reports",
+        )
+        accepted_counts = _accepted_history_counts(
+            state,
+            self.manifest.repo_root / "automation" / "reports",
+        )
         project_state = ProjectState(self.manifest.repo_root).summary()
         summary = _build_summary(state, typed_results)
         comparison = _render_comparison_markdown(state, typed_results)
-        active_next = _compute_next_lot_recommendation(typed_results, self.manifest.next_code_lot)
+        active_next = _compute_next_lot_recommendation(
+            typed_results,
+            self.manifest.next_code_lot,
+            accepted_counts=accepted_counts,
+        )
 
         replace_auto_section(
             self.manifest.tracking.ane_todo_active,
@@ -702,6 +914,15 @@ def _optional_string(value: object) -> str | None:
     return text or None
 
 
+def _runtime_error_hint(stderr: str) -> str | None:
+    for raw_line in stderr.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        return line[:240]
+    return None
+
+
 def _slugify(value: str) -> str:
     return "".join(char if char.isalnum() else "_" for char in value).strip("_").lower()
 
@@ -732,9 +953,29 @@ def _build_summary(state: RunState, results: list[ModelRunResult]) -> dict[str, 
     }
 
 
-def _compute_next_lot_recommendation(results: list[ModelRunResult], fallback: str) -> str:
+def _compute_next_lot_recommendation(
+    results: list[ModelRunResult],
+    fallback: str,
+    *,
+    accepted_counts: dict[str, int] | None = None,
+) -> str:
+    accepted_counts = accepted_counts or {}
+    provider_failed_models = [item.model for item in results if item.classification == "provider_failed"]
+    has_quality_blocked = any(item.classification == "quality_blocked" for item in results)
+    if accepted_counts.get("apple-coreml:qwen3.5-4b-onnx-q4f16", 0) >= 2:
+        if provider_failed_models:
+            if has_quality_blocked:
+                return "Reference locale reconfirmee; retablir le runtime des modeles provider_failed puis reprendre rewrite/repair sur les modeles bloques a gate."
+            return "Reference locale reconfirmee; retablir le runtime des modeles provider_failed avant de poursuivre."
+        if any(item.classification == "quality_blocked" for item in results):
+            return "Reference locale reconfirmee; resserrer rewrite/repair sur les modeles deja bloques a gate."
+        return "Reference locale reconfirmee; garder les autres modeles en regression."
     if any(item.classification == "accepted" for item in results):
-        return "Rejouer uniquement les baselines vitesse puis figer la référence locale dans les README/runbooks."
+        if provider_failed_models:
+            return "Confirmer la reference accepted puis retablir le runtime des modeles provider_failed."
+        if any(item.classification == "quality_blocked" for item in results):
+            return "Confirmer la reference accepted puis resserrer rewrite/repair sur les modeles deja bloques a gate."
+        return "Figer la reference locale dans les README/runbooks et garder les autres modeles en regression."
     if any(item.reached_gate() for item in results):
         return "Analyser les runs ayant atteint gate/repair puis resserrer la reference locale autour des meilleurs candidats."
     return fallback

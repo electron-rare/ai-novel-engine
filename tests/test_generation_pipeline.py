@@ -313,6 +313,44 @@ class GenerationPipelineTests(unittest.TestCase):
         self.assertEqual(meta["artifacts"]["repair_latest"], str(self.root / "brouillons" / "chapitres" / "chapitre_01" / "repair_v1.md"))
         self.assertEqual(meta["draft_final"], str(self.root / "brouillons" / "chapitres" / "chapitre_01" / "repair_v1.md"))
 
+    def test_rewrite_strips_code_fences_and_chapter_title_before_promotion(self):
+        rewritten = f"```markdown\n# Chapitre 01\n\n{self._narrative_text().strip()}\n```"
+        provider = MockGenerationProvider(
+            {
+                "structure": "# Structure — chapitre_01\n\n## Objectif dramatique\nPoser une menace.\n",
+                "draft": "# Chapitre 01\n\nUn premier jet tendu.\n",
+                "critique": {
+                    "summary": "Le brouillon doit etre reraconte proprement.",
+                    "rewrite_required": True,
+                    "deviations": ["Le texte garde un habillage markdown inutile."],
+                    "recommendations": ["Supprimer les marqueurs de presentation."],
+                },
+                "rewrite": rewritten,
+                "gate": {
+                    "ready_for_manuscript": True,
+                    "summary": "Le chapitre peut etre promu.",
+                    "blockers": [],
+                    "recommendations": [],
+                    "heuristic_blockers": [],
+                },
+                "memory": {
+                    "summary": "Le chapitre garde sa tension sans habillage markdown.",
+                    "characters": [{"name": "Ariane", "description": "Traverse la scene sans filtre meta."}],
+                    "locations": [{"name": "Port-Vieux", "description": "Reste nocturne et menaçant."}],
+                    "timeline_events": [{"event": "Ariane avance sans retour en arriere.", "order_hint": "nuit"}],
+                },
+            }
+        )
+        pipeline = GenerationPipeline(self.root, provider=provider)
+
+        outcome = pipeline.generate_chapter("01", approval_callback=lambda _report, _path: True)
+
+        self.assertTrue(outcome.accepted)
+        manuscript_text = outcome.manuscript_path.read_text(encoding="utf-8")
+        self.assertNotIn("```", manuscript_text)
+        self.assertNotIn("# Chapitre 01", manuscript_text)
+        self.assertTrue(manuscript_text.startswith("Ariane longe le quai"))
+
     def test_truncated_ending_triggers_repair_before_promotion(self):
         provider = MockGenerationProvider(
             {
@@ -919,7 +957,7 @@ class ProviderConfigTests(unittest.TestCase):
         )
         self.assertEqual(
             pipeline._repair_model_for_attempt(apple_provider, 2),
-            "ollama:qwen2.5:7b",
+            "apple-coreml:qwen2.5-0.5b-instruct-onnx",
         )
 
     def test_repair_fallback_override_env_wins(self):

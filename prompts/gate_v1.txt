@@ -4,6 +4,8 @@ Ne mets aucun texte avant ou après le JSON.
 Ne mets aucun bloc Markdown.
 Le but est de decider si ce texte peut etre promu dans le manuscrit.
 Bloque si le texte ressemble encore a un plan, s'il semble coupe avant sa fin, ou s'il manque une vraie continuite narrative.
+Ne bloque pas `outline_like` si le texte reste en prose continue, sans titres, sans puces et sans labels visibles, meme s'il est simple ou sobre.
+Utilise `outline_like` seulement s'il reste des traces visibles de plan, de checklist, de resume de scene, d'intitules structurants ou d'ecriture meta.
 Limite-toi a 1 phrase de resume, 4 blockers max et 4 recommandations max.
 
 Chapitre cible: $chapter_slug

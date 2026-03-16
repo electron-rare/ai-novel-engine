@@ -2,7 +2,11 @@
 mascarade_repo = "/Users/electron/mascarade"
 core_base_url = "http://127.0.0.1:8100"
 apple_runtime_url = "http://127.0.0.1:8201"
-ollama_tags_url = "http://127.0.0.1:11435/api/tags"
+ollama_tags_url = "http://127.0.0.1:11434/api/tags"
+# `native` garde le preflight Ollama `/api/chat`.
+# `openai_compatible` saute ce preflight et envoie `ollama:*` vers l'URL ci-dessous.
+ollama_runtime = "native"
+ollama_openai_base_url = "http://127.0.0.1:8100"
 apple_model_ready_timeout_seconds = 30
 apple_model_poll_interval_seconds = 2
 
@@ -28,7 +32,6 @@ ANE_REPAIR_MAX_PASSES = "2"
 apple_models = [
   "qwen2.5-0.5b-instruct-onnx",
   "qwen3.5-4b-onnx-q4f16",
-  "stateful-mistral7b-instruct-int4-coreml",
 ]
 ollama_models = [
   "qwen2.5:7b",
@@ -48,14 +51,12 @@ models = [
 ]
 
 [lots.preflight_only]
-models = [
-  "apple-coreml:stateful-mistral7b-instruct-int4-coreml",
-]
+models = []
 
 [tracking.ane]
 todo_active = "TODO_ACTIVE.md"
 todo_done = "TODO_IMPLEMENTE.md"
-plan = "docs/EXECUTION_PLAN_2026-03-08.md"
+plan = "docs/EXECUTION_PLAN_2026-03-14.md"
 comparison = "docs/MODEL_COMPARISON_2026-03-08.md"
 readme = "README.md"
 runbook = "docs/runbooks/LOCAL_GENERATION.md"
