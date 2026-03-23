@@ -5,9 +5,11 @@ import json
 import os
 from pathlib import Path
 import re
+import tempfile
 from typing import Callable, TypeVar
 
 from core.chapters import ChapterId, resolve_chapter_file
+from core.evaluation import build_narrative_judge_from_env
 from core.generation.models import (
     ControlReport,
     GenerationContext,
@@ -26,6 +28,12 @@ from core.generation.provider import (
 )
 from core.intention.gate import IntentionGate
 from core.prompts import PromptStore
+from core.runtime.policies import (
+    default_repair_fallback_model,
+    is_cross_apple_runtime_switch,
+    model_provider_name,
+    resolve_repair_model,
+)
 
 
 ApprovalCallback = Callable[[ControlReport, Path], bool]
@@ -41,6 +49,7 @@ class GenerationPipeline:
         prompt_store: PromptStore | None = None,
         input_func: Callable[[str], str] = input,
         output_func: OutputCallback = print,
+        prompt_profile: str | None = None,
     ):
         self.root = root
         self.provider = provider
@@ -48,6 +57,7 @@ class GenerationPipeline:
         self.input_func = input_func
         self.output_func = output_func
         self.intention_gate = IntentionGate(root)
+        self.prompt_profile = prompt_profile
 
     def generate_chapter(
         self,
@@ -74,32 +84,24 @@ class GenerationPipeline:
             current_stage = "structure"
             structure_plan = self._generate_structure(provider, context, metadata)
             self._write_text(context.structure_path, structure_plan.markdown)
-            self._complete_stage(metadata, current_stage)
-            self._set_status(metadata, "structure_ready", "Structure générée.")
-            self._write_metadata(context.meta_path, metadata)
+            self._finish_stage(metadata, context.meta_path, "structure", "Structure générée.")
 
             current_stage = "draft"
             draft_v1 = self._generate_draft(provider, context, structure_plan, metadata)
             self._write_text(context.draft_v1_path, draft_v1)
-            self._complete_stage(metadata, current_stage)
-            self._set_status(metadata, "draft_ready", "Brouillon initial généré.")
-            self._write_metadata(context.meta_path, metadata)
+            self._finish_stage(metadata, context.meta_path, "draft", "Brouillon initial généré.")
 
             current_stage = "critique"
             control_report = self._generate_control_report(provider, context, structure_plan, draft_v1, metadata)
             self._write_text(context.critique_path, control_report.to_markdown(context.chapter_id))
-            self._complete_stage(metadata, current_stage)
-            self._set_status(metadata, "critique_ready", "Critique structurée générée.")
             metadata["control_report"] = control_report.to_dict()
-            self._write_metadata(context.meta_path, metadata)
+            self._finish_stage(metadata, context.meta_path, "critique", "Critique structurée générée.")
 
             current_stage = "rewrite"
             draft_v2 = self._rewrite_draft(provider, context, structure_plan, draft_v1, control_report, metadata)
             self._write_text(context.draft_v2_path, draft_v2)
-            self._complete_stage(metadata, current_stage)
-            self._set_status(metadata, "rewrite_ready", "Brouillon final généré, contrôle manuscrit en cours.")
             metadata["draft_final"] = str(context.draft_v2_path)
-            self._write_metadata(context.meta_path, metadata)
+            self._finish_stage(metadata, context.meta_path, "rewrite", "Brouillon final généré, contrôle manuscrit en cours.")
             current_candidate_text = draft_v2
             current_candidate_path = context.draft_v2_path
 
@@ -307,7 +309,7 @@ class GenerationPipeline:
                 continue
             if stripped == "---":
                 continue
-            if re.match(r"^#\s+(chapitre|chapter)\b", stripped, flags=re.IGNORECASE):
+            if re.match(r"^#{1,6}\s", stripped):
                 continue
             cleaned_lines.append(raw_line)
 
@@ -328,9 +330,37 @@ class GenerationPipeline:
             focus.append(
                 "- la derniere scene doit se fermer sur une decision nette et sa consequence immediate, dans une phrase pleinement terminee"
             )
+            focus.append(
+                "- apres l'acte final, fermer la scene en 2-4 phrases sans rouvrir un nouveau trajet, un nouveau lieu ou une nouvelle decouverte"
+            )
         if "too_short" in blockers:
             focus.append(
                 "- viser au moins 4 paragraphes utiles pour obtenir une scene complete, pas un resume raccourci"
+            )
+        if "missing_risky_decision" in blockers:
+            focus.append(
+                "- dans le dernier tiers, ajouter une decision risquee concrete et couteuse prise par le personnage principal"
+            )
+            focus.append(
+                "- la decision finale doit etre executee tout de suite et couter quelque chose d'observable: exposition, perte, poursuite, argent sacrifie ou point de non-retour"
+            )
+        if "missing_immediate_consequence" in blockers:
+            focus.append(
+                "- montrer dans les phrases qui suivent une consequence immediate, observable et irreversible de la decision finale"
+            )
+            focus.append(
+                "- cette consequence doit arriver dans le meme lieu et la meme minute: cri, sang, poursuite, alarme, porte forcee, preuve detruite, argent perdu ou autre point de non-retour visible"
+            )
+            focus.append(
+                "- ne pas finir sur un depart vers la suite; montrer d'abord la reaction ou le degat cause par l'acte final, puis fermer la scene"
+            )
+        if "incomplete_scene" in blockers:
+            focus.append(
+                "- completer la scene jusqu'a une fermeture dramatique nette; ne pas s'arreter juste avant l'acte ou juste avant son effet"
+            )
+        if "weak_narrative_continuity" in blockers:
+            focus.append(
+                "- renforcer la continuite causale entre perceptions, decisions, actions et consequences; supprimer les sauts resumes ou abstraits"
             )
         if not focus:
             focus.append("- conserver une prose continue, concrete et entierement narrative")
@@ -428,6 +458,7 @@ class GenerationPipeline:
     ) -> str:
         prompt = self.prompt_store.render(
             "rewrite",
+            prompt_profile=self.prompt_profile,
             chapter_slug=context.chapter_id.slug,
             intention=context.intention_text,
             structure_markdown=structure_plan.markdown,
@@ -513,6 +544,7 @@ class GenerationPipeline:
     ) -> str:
         prompt = self.prompt_store.render(
             "repair",
+            prompt_profile=self.prompt_profile,
             chapter_slug=context.chapter_id.slug,
             intention=context.intention_text,
             structure_markdown=structure_plan.markdown,
@@ -550,33 +582,71 @@ class GenerationPipeline:
             "gate",
             "Contrôle manuscrit en cours.",
         )
+        judge = build_narrative_judge_from_env(provider=provider, prompt_store=self.prompt_store)
         heuristic_report = self._heuristic_gate_report(draft_v2)
-        if heuristic_report is not None:
-            metadata["last_status_message"] = heuristic_report.summary
-            return heuristic_report
+        if heuristic_report is None:
+            prompt = self.prompt_store.render(
+                "gate",
+                chapter_slug=context.chapter_id.slug,
+                intention=context.intention_text,
+                structure_markdown=structure_plan.markdown,
+                draft_markdown=draft_v2,
+            )
+            gate_report = self._generate_json_payload(
+                provider=provider,
+                stage="gate",
+                prompt=prompt,
+                retry_prompt_name="gate_retry",
+                parse_response=ManuscriptGateReport.from_response_text,
+                metadata=metadata,
+                meta_path=context.meta_path,
+                retry_context={
+                    "chapter_slug": context.chapter_id.slug,
+                    "intention": context.intention_text,
+                    "structure_markdown": structure_plan.markdown,
+                    "draft_markdown": draft_v2,
+                },
+                begin_stage=False,
+            )
+            gate_report = self._sanitize_gate_report(draft_v2, gate_report)
+        else:
+            gate_report = heuristic_report
 
-        prompt = self.prompt_store.render(
-            "gate",
-            chapter_slug=context.chapter_id.slug,
-            intention=context.intention_text,
-            structure_markdown=structure_plan.markdown,
-            draft_markdown=draft_v2,
-        )
-        return self._generate_json_payload(
-            provider=provider,
-            stage="gate",
-            prompt=prompt,
-            retry_prompt_name="gate_retry",
-            parse_response=ManuscriptGateReport.from_response_text,
-            metadata=metadata,
-            meta_path=context.meta_path,
-            retry_context={
-                "chapter_slug": context.chapter_id.slug,
-                "intention": context.intention_text,
-                "structure_markdown": structure_plan.markdown,
-                "draft_markdown": draft_v2,
-            },
-            begin_stage=False,
+        if judge is not None:
+            judge_report = judge.evaluate(
+                chapter_slug=context.chapter_id.slug,
+                intention=context.intention_text,
+                structure_markdown=structure_plan.markdown,
+                draft_markdown=draft_v2,
+                story_context=context.story_context,
+            )
+            gate_report = gate_report.with_judge_report(judge_report)
+
+        metadata["last_status_message"] = gate_report.summary
+        return gate_report
+
+    def _sanitize_gate_report(self, draft_markdown: str, gate_report: ManuscriptGateReport) -> ManuscriptGateReport:
+        if "outline_like" not in gate_report.blockers:
+            return gate_report
+        if self._is_outline_like(draft_markdown):
+            return gate_report
+
+        blockers = [item for item in gate_report.blockers if item != "outline_like"]
+        recommendations = [item for item in gate_report.recommendations if item]
+        if blockers:
+            summary = "Le garde-fou manuscrit a bloque la promotion: " + ", ".join(blockers) + "."
+        else:
+            summary = "Le texte reste en prose narrative continue; aucun marqueur visuel de plan n'a ete confirme."
+
+        return ManuscriptGateReport(
+            ready_for_manuscript=not blockers and not gate_report.heuristic_blockers and not gate_report.judge_blockers,
+            summary=summary,
+            blockers=blockers,
+            recommendations=recommendations,
+            heuristic_blockers=list(gate_report.heuristic_blockers),
+            judge_blockers=list(gate_report.judge_blockers),
+            judge_report=gate_report.judge_report,
+            raw={**gate_report.raw, "outline_like_sanitized": True},
         )
 
     def _persist_gate_report(
@@ -608,43 +678,24 @@ class GenerationPipeline:
 
     def _repair_model_for_attempt(self, provider: GenerationProvider, attempt: int) -> str | None:
         base_model = self._provider_model_name(provider)
-        if attempt <= 1:
-            return base_model
-
         override = os.environ.get("ANE_REPAIR_FALLBACK_MODEL", "").strip()
-        candidate = override or self._default_repair_fallback_model(base_model) or base_model
-        if not override and self._model_provider_name(candidate) != self._model_provider_name(base_model):
-            candidate = base_model
-        if self._is_cross_apple_runtime_switch(base_model, candidate):
-            raise ProviderError(
-                "ANE_REPAIR_FALLBACK_MODEL ne peut pas viser un autre modèle apple-coreml pendant un même smoke. "
-                "Relancer le runtime Apple sur le modèle cible ou utiliser un fallback non-Apple."
+        try:
+            return resolve_repair_model(
+                base_model=base_model,
+                attempt=attempt,
+                override_model=override,
             )
-        return candidate
+        except RuntimeError as exc:
+            raise ProviderError(str(exc)) from exc
 
     def _default_repair_fallback_model(self, model: str | None) -> str | None:
-        mapping = {
-            "ollama:qwen2.5:1.5b": "ollama:qwen2.5:7b",
-            "apple-coreml:qwen2.5-0.5b-instruct-onnx": "ollama:qwen2.5:7b",
-            "apple-coreml:qwen3.5-4b-onnx-q4f16": "ollama:qwen2.5:7b",
-        }
-        if not model:
-            return None
-        return mapping.get(model)
+        return default_repair_fallback_model(model)
 
     def _is_cross_apple_runtime_switch(self, base_model: str | None, candidate: str | None) -> bool:
-        if not base_model or not candidate:
-            return False
-        if base_model == candidate:
-            return False
-        return base_model.startswith("apple-coreml:") and candidate.startswith("apple-coreml:")
+        return is_cross_apple_runtime_switch(base_model, candidate)
 
     def _model_provider_name(self, model: str | None) -> str | None:
-        if not model or ":" not in model:
-            return None
-        provider, _ = model.split(":", 1)
-        provider = provider.strip()
-        return provider or None
+        return model_provider_name(model)
 
     def _heuristic_gate_report(self, draft_v2: str) -> ManuscriptGateReport | None:
         blockers: list[str] = []
@@ -685,6 +736,7 @@ class GenerationPipeline:
 
     def _is_outline_like(self, text: str) -> bool:
         detected_markers: set[str] = set()
+        bullet_line_count = 0
         for line in text.splitlines():
             stripped = line.strip()
             if not stripped:
@@ -698,6 +750,9 @@ class GenerationPipeline:
                 detected_markers.add("horizontal_rule")
             if stripped.startswith(("- ", "* ")):
                 detected_markers.add("bullet_list")
+                bullet_line_count += 1
+                if bullet_line_count >= 4:
+                    detected_markers.add("dense_bullet_list")
             if re.match(r"^\d+[.)]\s", stripped):
                 detected_markers.add("numbered_list")
             if (
@@ -713,7 +768,7 @@ class GenerationPipeline:
                 detected_markers.add("structure_label")
             if re.match(r"^#{0,6}\s*chapitre\b", lowered):
                 detected_markers.add("chapter_title")
-            if "scène" in lowered or "scene" in lowered or "— titre" in lowered:
+            if re.match(r"^#{0,6}\s*(scène|scene)\b", lowered) or re.match(r"^(?:scène|scene)\s*\d", lowered):
                 detected_markers.add("scene_heading")
             if len(detected_markers) >= 2:
                 return True
@@ -838,7 +893,10 @@ class GenerationPipeline:
     ) -> None:
         existing: dict[str, dict[str, object]] = {}
         if path.exists():
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                payload = {}
             if isinstance(payload, dict):
                 existing = payload
 
@@ -864,7 +922,10 @@ class GenerationPipeline:
     ) -> None:
         existing: list[dict[str, str]] = []
         if path.exists():
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                payload = []
             if isinstance(payload, list):
                 existing = [
                     {str(key): str(value) for key, value in item.items()}
@@ -875,7 +936,8 @@ class GenerationPipeline:
         for record in records:
             merged = dict(record)
             merged["chapter"] = chapter_id.slug
-            existing.append(merged)
+            if merged not in existing:
+                existing.append(merged)
 
         self._write_json(path, existing)
 
@@ -939,6 +1001,17 @@ class GenerationPipeline:
         if not isinstance(model, str):
             return None
         return model.strip() or None
+
+    def _finish_stage(
+        self,
+        metadata: dict[str, object],
+        meta_path: Path,
+        stage: str,
+        message: str,
+    ) -> None:
+        self._complete_stage(metadata, stage)
+        self._set_status(metadata, f"{stage}_ready", message)
+        self._write_metadata(meta_path, metadata)
 
     def _complete_stage(self, metadata: dict[str, object], stage: str) -> None:
         completed = metadata.setdefault("completed_stages", [])
@@ -1017,7 +1090,17 @@ class GenerationPipeline:
 
     def _write_json(self, path: Path, payload: object) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        rendered = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            delete=False,
+            suffix=".tmp",
+        ) as handle:
+            handle.write(rendered)
+            temp_path = Path(handle.name)
+        temp_path.replace(path)
 
     def _write_text(self, path: Path, content: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

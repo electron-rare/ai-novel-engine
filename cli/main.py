@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import argparse
 from pathlib import Path
@@ -157,7 +158,8 @@ def cmd_generate_chapter(
     *,
     force_accept: bool | None = None,
 ):
-    pipeline = GenerationPipeline(root, provider=provider, input_func=input_func)
+    prompt_profile = os.environ.get("ANE_PROMPT_PROFILE") or None
+    pipeline = GenerationPipeline(root, provider=provider, input_func=input_func, prompt_profile=prompt_profile)
     outcome = pipeline.generate_chapter(
         chapter_value,
         approval_callback=_approval_callback_from_flags(force_accept),

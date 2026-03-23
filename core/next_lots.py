@@ -7,47 +7,28 @@ import inspect
 import json
 import os
 from pathlib import Path
-import re
 import subprocess
 import time
 import tomllib
-from typing import Any, Callable, Iterable
+import tempfile
+from typing import Any, Callable
 from urllib import error, request
 
 from core.chapters import ChapterId
-from core.project.loader import ProjectState
-
-
-AUTO_SYNC_TODO_ACTIVE = "ANE-TODO-ACTIVE"
-AUTO_SYNC_TODO_DONE = "ANE-TODO-DONE"
-AUTO_SYNC_PLAN = "ANE-PLAN"
-AUTO_SYNC_COMPARISON = "ANE-COMPARISON"
-AUTO_SYNC_README = "ANE-README"
-AUTO_SYNC_RUNBOOK = "ANE-RUNBOOK"
-AUTO_SYNC_MASCARADE_TODO = "MASCARADE-TODO"
-AUTO_SYNC_MASCARADE_PLAN = "MASCARADE-PLAN"
-AUTO_SYNC_MASCARADE_README = "MASCARADE-README"
-AUTO_SYNC_MASCARADE_RUNBOOK = "MASCARADE-RUNBOOK"
+from core.runtime.checkpoints import checkpoint_manual_action_for_model, host_port_from_base_url
+from core.runtime.orchestration import (
+    build_runtime_execution_plan,
+    collect_checkpoint_runtime_signals,
+    missing_ollama_models,
+    read_current_apple_model,
+    runtime_timeout_for_model,
+)
+from core.runtime.preflight import run_ollama_native_preflight
+from core.tracking_sync import TrackingPaths, build_tracking_sync_context, sync_tracking, write_report_summary
 
 
 class NextLotsError(RuntimeError):
     """Raised when the orchestration flow cannot continue automatically."""
-
-
-@dataclass(frozen=True)
-class TrackingPaths:
-    ane_todo_active: Path
-    ane_todo_done: Path
-    ane_plan: Path
-    ane_comparison: Path
-    ane_readme: Path
-    ane_runbook: Path
-    mascarade_repo: Path
-    mascarade_todo: Path
-    mascarade_plan: Path
-    mascarade_readme: Path
-    mascarade_runbook: Path
-
 
 @dataclass(frozen=True)
 class Manifest:
@@ -70,6 +51,8 @@ class Manifest:
     priority_models: list[str]
     baseline_models: list[str]
     preflight_only_models: list[str]
+    french_models: list[str]
+    prompt_profiles: dict[str, str]
     next_code_lot: str
 
     @classmethod
@@ -122,6 +105,8 @@ class Manifest:
             priority_models=[str(item) for item in lots["priority_models"]["models"]],
             baseline_models=[str(item) for item in lots["baselines"]["models"]],
             preflight_only_models=[str(item) for item in lots["preflight_only"]["models"]],
+            french_models=[str(item) for item in lots.get("french_models", {}).get("models", [])],
+            prompt_profiles={str(k): str(v) for k, v in payload.get("prompt_profiles", {}).items()},
             next_code_lot=str(payload["next_actions"]["rewrite_compaction"]),
         )
 
@@ -216,7 +201,17 @@ class RunState:
         target = path or Path(self.state_path)
         self.updated_at = _timestamp()
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(asdict(self), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        rendered = json.dumps(asdict(self), ensure_ascii=False, indent=2) + "\n"
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=target.parent,
+            delete=False,
+            suffix=".tmp",
+        ) as handle:
+            handle.write(rendered)
+            temp_path = Path(handle.name)
+        temp_path.replace(target)
 
     def append_result(self, result: ModelRunResult) -> None:
         self.results.append(asdict(result))
@@ -276,92 +271,6 @@ def _default_json_fetcher(url: str, timeout: float) -> Any:
         return json.loads(response.read().decode("utf-8"))
 
 
-def _auto_markers(name: str) -> tuple[str, str]:
-    return (
-        f"<!-- AUTO-SYNC:{name}:START -->",
-        f"<!-- AUTO-SYNC:{name}:END -->",
-    )
-
-
-def replace_auto_section(path: Path, marker_name: str, heading: str, body: str) -> None:
-    start_marker, end_marker = _auto_markers(marker_name)
-    text = path.read_text(encoding="utf-8") if path.exists() else ""
-    section = f"{heading}\n{start_marker}\n{body.rstrip()}\n{end_marker}\n"
-    if start_marker in text and end_marker in text:
-        start = text.index(start_marker)
-        end = text.index(end_marker) + len(end_marker)
-        replacement_start = text.rfind("\n", 0, start)
-        if replacement_start == -1:
-            replacement_start = 0
-        else:
-            replacement_start += 1
-        new_text = f"{text[:replacement_start]}{section}{text[end:].lstrip()}"
-    else:
-        suffix = "\n" if text.endswith("\n") else "\n\n"
-        new_text = f"{text}{suffix}{section}"
-    repeated_heading_pattern = rf"(?:{re.escape(heading)}\n){{2,}}"
-    new_text = re.sub(repeated_heading_pattern, f"{heading}\n", new_text)
-    path.write_text(new_text, encoding="utf-8")
-
-
-def _safe_timestamp(value: str) -> datetime:
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
-        return datetime.fromtimestamp(0, tz=timezone.utc)
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
-
-def _load_report_history(reports_root: Path) -> list[RunState]:
-    history: list[RunState] = []
-    if not reports_root.exists():
-        return history
-    for run_path in sorted(reports_root.glob("*/run.json")):
-        try:
-            history.append(RunState.load(run_path))
-        except (OSError, json.JSONDecodeError, TypeError, ValueError):
-            continue
-    history.sort(key=lambda item: (_safe_timestamp(item.updated_at), item.report_dir))
-    return history
-
-
-def _result_sort_key(result: ModelRunResult) -> tuple[int, str, str]:
-    category_order = {
-        "priority_models": 0,
-        "baselines": 1,
-        "preflight_only": 2,
-        "runtime_preflight": 3,
-    }
-    provider = result.model.split(":", 1)[0]
-    return (category_order.get(result.category, 9), provider, result.model)
-
-
-def _consolidated_tracking_results(state: RunState, reports_root: Path) -> list[ModelRunResult]:
-    latest_by_model: dict[str, tuple[tuple[datetime, int], ModelRunResult]] = {}
-    sequence = 0
-    for snapshot in [*_load_report_history(reports_root), state]:
-        stamp = _safe_timestamp(snapshot.updated_at)
-        for result in snapshot.typed_results():
-            candidate_key = (stamp, sequence)
-            current = latest_by_model.get(result.model)
-            if current is None or candidate_key >= current[0]:
-                latest_by_model[result.model] = (candidate_key, result)
-            sequence += 1
-    return sorted((payload[1] for payload in latest_by_model.values()), key=_result_sort_key)
-
-
-def _accepted_history_counts(state: RunState, reports_root: Path) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for snapshot in [*_load_report_history(reports_root), state]:
-        for result in snapshot.typed_results():
-            if result.classification != "accepted":
-                continue
-            counts[result.model] = counts.get(result.model, 0) + 1
-    return counts
-
-
 class NextLotsRunner:
     def __init__(
         self,
@@ -398,7 +307,15 @@ class NextLotsRunner:
             state.dump(state_path)
 
         if report_only:
-            self._sync_tracking(state, dry_run=dry_run)
+            sync_tracking(
+                build_tracking_sync_context(
+                    self.manifest.repo_root,
+                    next_code_lot=self.manifest.next_code_lot,
+                    tracking=self.manifest.tracking,
+                ),
+                state,
+                dry_run=dry_run,
+            )
             return 0
 
         while state.step_index < len(state.steps):
@@ -416,7 +333,15 @@ class NextLotsRunner:
                 exit_code = self._run_model_step(state, step, dry_run=dry_run)
                 state.dump()
                 if exit_code is not None:
-                    self._sync_tracking(state, dry_run=dry_run)
+                    sync_tracking(
+                        build_tracking_sync_context(
+                            self.manifest.repo_root,
+                            next_code_lot=self.manifest.next_code_lot,
+                            tracking=self.manifest.tracking,
+                        ),
+                        state,
+                        dry_run=dry_run,
+                    )
                     return exit_code
                 state.step_index += 1
                 state.model_index = 0
@@ -424,14 +349,22 @@ class NextLotsRunner:
                 continue
             if step_type == "tracking_sync":
                 print("==> lot tracking_sync")
-                self._sync_tracking(state, dry_run=dry_run)
+                sync_tracking(
+                    build_tracking_sync_context(
+                        self.manifest.repo_root,
+                        next_code_lot=self.manifest.next_code_lot,
+                        tracking=self.manifest.tracking,
+                    ),
+                    state,
+                    dry_run=dry_run,
+                )
                 state.step_index += 1
                 state.model_index = 0
                 state.dump()
                 continue
             raise NextLotsError(f"Type de lot non supporté: {step_type}")
 
-        self._write_report_summary(state)
+        write_report_summary(state)
         return 0
 
     def _steps_for_lot(self, lot: str) -> list[dict[str, Any]]:
@@ -449,6 +382,11 @@ class NextLotsRunner:
             return [
                 {"type": "models", "name": "baselines", "models": self.manifest.baseline_models, "preflight_only": False},
                 {"type": "models", "name": "preflight_only", "models": self.manifest.preflight_only_models, "preflight_only": True},
+                {"type": "tracking_sync"},
+            ]
+        if lot == "french_models":
+            return [
+                {"type": "models", "name": "french_models", "models": self.manifest.french_models, "preflight_only": False},
                 {"type": "tracking_sync"},
             ]
         if lot == "tracking_sync":
@@ -486,19 +424,11 @@ class NextLotsRunner:
             )
 
     def _missing_ollama_models(self) -> list[str]:
-        try:
-            payload = self.json_fetcher(self.manifest.ollama_tags_url, 10.0)
-        except Exception:
-            return []
-        models = payload.get("models") if isinstance(payload, dict) else None
-        if not isinstance(models, list):
-            return []
-        names = {
-            str(item.get("name", "")).strip()
-            for item in models
-            if isinstance(item, dict) and str(item.get("name", "")).strip()
-        }
-        return [model for model in self.manifest.required_ollama_models if model not in names]
+        return missing_ollama_models(
+            self.manifest.required_ollama_models,
+            tags_url=self.manifest.ollama_tags_url,
+            json_fetcher=self.json_fetcher,
+        )
 
     def _run_model_step(self, state: RunState, step: dict[str, Any], *, dry_run: bool) -> int | None:
         models = [str(item) for item in step["models"]]
@@ -526,7 +456,7 @@ class NextLotsRunner:
                 print(f"commande: {checkpoint['command']}")
                 state.pending_manual_action = checkpoint
                 state.notes = [f"Checkpoint manuel requis pour: {model}"]
-                self._write_report_summary(state)
+                write_report_summary(state)
                 return 3
             state.pending_manual_action = None
             result = self._run_model(model, category=category, preflight_only=preflight_only, report_dir=Path(state.report_dir))
@@ -535,37 +465,35 @@ class NextLotsRunner:
         return None
 
     def _checkpoint_if_runtime_manual_step_needed(self, state: RunState, model: str) -> dict[str, Any] | None:
-        if not self._core_health_ok():
-            return self._build_manual_action(
-                state,
-                args=["bash", "scripts/prepare_runtime_step.sh", "--restart", "core", "--resume-state", state.state_path, "--ane-script", str(self.manifest.repo_root / "scripts" / "run_next_lots.py")],
-                reason="Le core mascarade ne répond pas correctement.",
-            )
-        if not model.startswith("apple-coreml:"):
-            return None
-        target_model = model.split(":", 1)[1]
-        apple_model = self._wait_for_expected_apple_model(target_model)
-        if apple_model == target_model:
-            return None
-        args = [
-            "bash",
-            "scripts/prepare_runtime_step.sh",
-            "--apple-model",
-            target_model,
-            "--resume-state",
-            state.state_path,
-            "--ane-script",
-            str(self.manifest.repo_root / "scripts" / "run_next_lots.py"),
-        ]
-        return self._build_manual_action(
-            state,
-            args=args,
-            reason=f"Le runtime Apple sert `{apple_model or 'aucun modèle'}` au lieu de `{target_model}`.",
+        signals = collect_checkpoint_runtime_signals(
+            model,
+            core_base_url=self.manifest.core_base_url,
+            apple_runtime_url=self.manifest.apple_runtime_url,
+            apple_model_ready_timeout_seconds=self.manifest.apple_model_ready_timeout_seconds,
+            apple_model_poll_interval_seconds=self.manifest.apple_model_poll_interval_seconds,
+            ollama_runtime=self.manifest.ollama_runtime,
+            ollama_openai_base_url=self.manifest.ollama_openai_base_url,
+            json_fetcher=self.json_fetcher,
         )
+        action = checkpoint_manual_action_for_model(
+            model=model,
+            core_health_ok=signals.core_health_ok,
+            ollama_runtime=self.manifest.ollama_runtime,
+            ollama_openai_runtime_ready=signals.ollama_openai_runtime_ready,
+            ollama_openai_base_url=self.manifest.ollama_openai_base_url,
+            apple_model_active=signals.apple_model_active,
+            repo_root=str(self.manifest.repo_root),
+            state_path=state.state_path,
+            ane_script_path=str(self.manifest.repo_root / "scripts" / "run_next_lots.py"),
+        )
+        if action is None:
+            return None
+        return self._build_manual_action(state, args=action.args, reason=action.reason)
 
     def _build_manual_action(self, state: RunState, *, args: list[str], reason: str) -> dict[str, Any]:
         result = self._invoke_command(args, self.manifest.tracking.mascarade_repo, timeout_seconds=300)
         log_path = Path(state.report_dir) / f"manual_action_{len(state.results):02d}.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text(_command_log(result), encoding="utf-8")
         return {
             "reason": reason,
@@ -574,38 +502,11 @@ class NextLotsRunner:
             "resume_state": state.state_path,
         }
 
-    def _core_health_ok(self) -> bool:
-        try:
-            payload = self.json_fetcher(f"{self.manifest.core_base_url}/health", 10.0)
-        except Exception:
-            return False
-        return isinstance(payload, dict)
-
     def _current_apple_model(self) -> str | None:
-        try:
-            payload = self.json_fetcher(f"{self.manifest.apple_runtime_url}/models", 10.0)
-        except Exception:
-            return None
-        if isinstance(payload, list) and payload:
-            return str(payload[0]).strip() or None
-        if isinstance(payload, dict):
-            models = payload.get("models")
-            if isinstance(models, list) and models:
-                return str(models[0]).strip() or None
-        return None
-
-    def _wait_for_expected_apple_model(self, target_model: str) -> str | None:
-        deadline = time.monotonic() + max(self.manifest.apple_model_ready_timeout_seconds, 0.0)
-        poll_interval = max(self.manifest.apple_model_poll_interval_seconds, 0.1)
-        last_seen = self._current_apple_model()
-        if last_seen == target_model or self.manifest.apple_model_ready_timeout_seconds <= 0:
-            return last_seen
-        while time.monotonic() < deadline:
-            time.sleep(poll_interval)
-            last_seen = self._current_apple_model()
-            if last_seen == target_model:
-                return last_seen
-        return last_seen
+        return read_current_apple_model(
+            self.manifest.apple_runtime_url,
+            json_fetcher=self.json_fetcher,
+        )
 
     def _ollama_base_url(self) -> str:
         tags_url = self.manifest.ollama_tags_url.rstrip("/")
@@ -614,68 +515,23 @@ class NextLotsRunner:
             return tags_url[: -len(suffix)]
         return tags_url
 
-    def _openai_base_url_for_model(self, model: str) -> str:
-        if model.startswith("ollama:") and self.manifest.ollama_runtime == "openai_compatible":
-            return self.manifest.ollama_openai_base_url
-        return self.manifest.core_base_url
-
-    def _should_run_ollama_native_preflight(self, model: str) -> bool:
-        return model.startswith("ollama:") and self.manifest.ollama_runtime == "native"
+    def _host_port_from_base_url(self, base_url: str) -> tuple[str, int]:
+        return host_port_from_base_url(base_url)
 
     def _run_ollama_native_preflight(self, model: str) -> CommandResult:
         timeout_seconds = min(45.0, float(self._timeout_for_model(f"ollama:{model}")))
-        payload = {
-            "model": model,
-            "messages": [{"role": "user", "content": "Respond with exactly: ollama native preflight ok"}],
-            "stream": False,
-            "options": {
-                "temperature": 0,
-                "num_predict": 16,
-            },
-        }
-        body = json.dumps(payload).encode("utf-8")
-        started = time.monotonic()
-        try:
-            req = request.Request(
-                f"{self._ollama_base_url()}/api/chat",
-                data=body,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with request.urlopen(req, timeout=timeout_seconds) as response:
-                raw_payload = response.read().decode("utf-8")
-        except error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            return CommandResult(
-                args=["ollama-native-preflight", model],
-                returncode=1,
-                stdout="",
-                stderr=f"HTTP {exc.code} {exc.reason}\n{detail}".strip(),
-                duration_seconds=time.monotonic() - started,
-            )
-        except Exception as exc:
-            return CommandResult(
-                args=["ollama-native-preflight", model],
-                returncode=1,
-                stdout="",
-                stderr=f"{type(exc).__name__}: {exc}",
-                duration_seconds=time.monotonic() - started,
-            )
-        try:
-            parsed = json.loads(raw_payload)
-        except json.JSONDecodeError:
-            parsed = {"raw": raw_payload}
-        preview = {
-            "model": parsed.get("model"),
-            "content": (parsed.get("message") or {}).get("content", ""),
-            "done_reason": parsed.get("done_reason"),
-        }
+        result = run_ollama_native_preflight(
+            model=model,
+            tags_url=self.manifest.ollama_tags_url,
+            timeout_seconds=timeout_seconds,
+            opener=request.urlopen,
+        )
         return CommandResult(
-            args=["ollama-native-preflight", model],
-            returncode=0,
-            stdout=json.dumps(preview, ensure_ascii=False, indent=2),
-            stderr="",
-            duration_seconds=time.monotonic() - started,
+            args=result.args,
+            returncode=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            duration_seconds=result.duration_seconds,
         )
 
     def _invoke_command(
@@ -693,8 +549,14 @@ class NextLotsRunner:
     def _run_model(self, model: str, *, category: str, preflight_only: bool, report_dir: Path) -> ModelRunResult:
         result = ModelRunResult(model=model, category=category, apple_model_active=self._current_apple_model())
         model_slug = _slugify(model)
-        openai_base_url = self._openai_base_url_for_model(model)
-        if self._should_run_ollama_native_preflight(model):
+        runtime_plan = build_runtime_execution_plan(
+            model,
+            core_base_url=self.manifest.core_base_url,
+            ollama_runtime=self.manifest.ollama_runtime,
+            ollama_openai_base_url=self.manifest.ollama_openai_base_url,
+            smoke_timeout_seconds=self.manifest.smoke_timeout_seconds,
+        )
+        if runtime_plan.requires_native_ollama_preflight:
             native_preflight = self._run_ollama_native_preflight(model.split(":", 1)[1])
             if native_preflight.returncode != 0:
                 result.preflight_duration_seconds = native_preflight.duration_seconds
@@ -713,16 +575,16 @@ class NextLotsRunner:
             "bash",
             "scripts/smoke_openai_compat_ane.sh",
             "--url",
-            openai_base_url,
+            runtime_plan.openai_base_url,
             "--model",
             model,
             "--timeout",
-            str(self._timeout_for_model(model)),
+            str(runtime_plan.timeout_seconds),
         ]
         preflight = self._invoke_command(
             preflight_args,
             self.manifest.tracking.mascarade_repo,
-            timeout_seconds=float(self._timeout_for_model(model) + 30),
+            timeout_seconds=float(runtime_plan.timeout_seconds + 30),
         )
         result.preflight_duration_seconds = preflight.duration_seconds
         preflight_log = report_dir / f"{model_slug}_preflight.log"
@@ -746,7 +608,7 @@ class NextLotsRunner:
             "bash",
             "scripts/smoke_local_generation.sh",
             "--base-url",
-            openai_base_url,
+            runtime_plan.openai_base_url,
             "--model",
             model,
             "--chapter",
@@ -754,16 +616,20 @@ class NextLotsRunner:
             "--workspace",
             str(workspace),
             "--timeout",
-            str(self.manifest.smoke_timeout_seconds),
+            str(runtime_plan.timeout_seconds),
             "--intention",
             self.manifest.smoke_intention,
             "--approve",
         ]
+        smoke_env = dict(self.manifest.preset_env)
+        profile = self.manifest.prompt_profiles.get(model)
+        if profile:
+            smoke_env["ANE_PROMPT_PROFILE"] = profile
         smoke = self._invoke_command(
             smoke_args,
             self.manifest.repo_root,
-            env=self.manifest.preset_env,
-            timeout_seconds=float(self.manifest.smoke_timeout_seconds + 60),
+            env=smoke_env,
+            timeout_seconds=float(runtime_plan.timeout_seconds * 4),
         )
         result.smoke_attempted = True
         result.smoke_duration_seconds = smoke.duration_seconds
@@ -807,101 +673,7 @@ class NextLotsRunner:
         return result
 
     def _timeout_for_model(self, model: str) -> int:
-        if model.startswith("apple-coreml:"):
-            return max(600, self.manifest.smoke_timeout_seconds)
-        return max(120, self.manifest.smoke_timeout_seconds)
-
-    def _sync_tracking(self, state: RunState, *, dry_run: bool) -> None:
-        if dry_run:
-            self._write_report_summary(state)
-            return
-        typed_results = _consolidated_tracking_results(
-            state,
-            self.manifest.repo_root / "automation" / "reports",
-        )
-        accepted_counts = _accepted_history_counts(
-            state,
-            self.manifest.repo_root / "automation" / "reports",
-        )
-        project_state = ProjectState(self.manifest.repo_root).summary()
-        summary = _build_summary(state, typed_results)
-        comparison = _render_comparison_markdown(state, typed_results)
-        active_next = _compute_next_lot_recommendation(
-            typed_results,
-            self.manifest.next_code_lot,
-            accepted_counts=accepted_counts,
-        )
-
-        replace_auto_section(
-            self.manifest.tracking.ane_todo_active,
-            AUTO_SYNC_TODO_ACTIVE,
-            "## Auto-sync",
-            _render_todo_active_sync(summary, active_next),
-        )
-        replace_auto_section(
-            self.manifest.tracking.ane_todo_done,
-            AUTO_SYNC_TODO_DONE,
-            "## Auto-sync",
-            _render_todo_done_sync(summary),
-        )
-        replace_auto_section(
-            self.manifest.tracking.ane_plan,
-            AUTO_SYNC_PLAN,
-            "## Auto-sync",
-            _render_plan_sync(summary, active_next),
-        )
-        replace_auto_section(
-            self.manifest.tracking.ane_comparison,
-            AUTO_SYNC_COMPARISON,
-            "## Auto-sync",
-            comparison,
-        )
-        replace_auto_section(
-            self.manifest.tracking.ane_readme,
-            AUTO_SYNC_README,
-            "## Etat auto-synchronise",
-            _render_readme_sync(summary, active_next),
-        )
-        replace_auto_section(
-            self.manifest.tracking.ane_runbook,
-            AUTO_SYNC_RUNBOOK,
-            "## Etat auto-synchronise",
-            _render_runbook_sync(summary, project_state, active_next),
-        )
-        replace_auto_section(
-            self.manifest.tracking.mascarade_todo,
-            AUTO_SYNC_MASCARADE_TODO,
-            "## Auto-sync",
-            _render_mascarade_todo_sync(summary, active_next),
-        )
-        replace_auto_section(
-            self.manifest.tracking.mascarade_plan,
-            AUTO_SYNC_MASCARADE_PLAN,
-            "## Auto-sync",
-            _render_mascarade_plan_sync(summary, active_next),
-        )
-        replace_auto_section(
-            self.manifest.tracking.mascarade_readme,
-            AUTO_SYNC_MASCARADE_README,
-            "## Etat auto-synchronise",
-            _render_mascarade_readme_sync(summary, active_next),
-        )
-        replace_auto_section(
-            self.manifest.tracking.mascarade_runbook,
-            AUTO_SYNC_MASCARADE_RUNBOOK,
-            "## Etat auto-synchronise",
-            _render_mascarade_runbook_sync(summary, active_next),
-        )
-        self._write_report_summary(state)
-
-    def _write_report_summary(self, state: RunState) -> None:
-        report_dir = Path(state.report_dir)
-        report_dir.mkdir(parents=True, exist_ok=True)
-        run_path = report_dir / "run.json"
-        summary_path = report_dir / "SUMMARY.md"
-        run_path.write_text(json.dumps(asdict(state), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        summary_path.write_text(_render_summary_markdown(state, state.typed_results()), encoding="utf-8")
-
+        return runtime_timeout_for_model(model, smoke_timeout_seconds=self.manifest.smoke_timeout_seconds)
 
 def _string_list(value: object) -> list[str]:
     if not isinstance(value, list):
@@ -936,239 +708,10 @@ def _command_log(result: CommandResult) -> str:
     )
 
 
-def _build_summary(state: RunState, results: list[ModelRunResult]) -> dict[str, Any]:
-    accepted = [item for item in results if item.classification == "accepted"]
-    reached_gate = [item for item in results if item.reached_gate()]
-    quality_blocked = [item for item in results if item.classification == "quality_blocked"]
-    provider_failed = [item for item in results if item.classification == "provider_failed"]
-    return {
-        "started_at": state.started_at,
-        "updated_at": state.updated_at,
-        "pending_manual_action": state.pending_manual_action,
-        "accepted_models": [item.model for item in accepted],
-        "reached_gate_models": [item.model for item in reached_gate],
-        "quality_blocked_models": [item.model for item in quality_blocked],
-        "provider_failed_models": [item.model for item in provider_failed],
-        "results": results,
-    }
-
-
-def _compute_next_lot_recommendation(
-    results: list[ModelRunResult],
-    fallback: str,
-    *,
-    accepted_counts: dict[str, int] | None = None,
-) -> str:
-    accepted_counts = accepted_counts or {}
-    provider_failed_models = [item.model for item in results if item.classification == "provider_failed"]
-    has_quality_blocked = any(item.classification == "quality_blocked" for item in results)
-    if accepted_counts.get("apple-coreml:qwen3.5-4b-onnx-q4f16", 0) >= 2:
-        if provider_failed_models:
-            if has_quality_blocked:
-                return "Reference locale reconfirmee; retablir le runtime des modeles provider_failed puis reprendre rewrite/repair sur les modeles bloques a gate."
-            return "Reference locale reconfirmee; retablir le runtime des modeles provider_failed avant de poursuivre."
-        if any(item.classification == "quality_blocked" for item in results):
-            return "Reference locale reconfirmee; resserrer rewrite/repair sur les modeles deja bloques a gate."
-        return "Reference locale reconfirmee; garder les autres modeles en regression."
-    if any(item.classification == "accepted" for item in results):
-        if provider_failed_models:
-            return "Confirmer la reference accepted puis retablir le runtime des modeles provider_failed."
-        if any(item.classification == "quality_blocked" for item in results):
-            return "Confirmer la reference accepted puis resserrer rewrite/repair sur les modeles deja bloques a gate."
-        return "Figer la reference locale dans les README/runbooks et garder les autres modeles en regression."
-    if any(item.reached_gate() for item in results):
-        return "Analyser les runs ayant atteint gate/repair puis resserrer la reference locale autour des meilleurs candidats."
-    return fallback
-
-
-def _render_todo_active_sync(summary: dict[str, Any], next_lot: str) -> str:
-    lines = [
-        f"- dernier cycle automatique: {summary['updated_at']}",
-        f"- modeles accepted: {_comma_or_none(summary['accepted_models'])}",
-        f"- modeles ayant atteint gate: {_comma_or_none(summary['reached_gate_models'])}",
-        f"- quality_blocked: {_comma_or_none(summary['quality_blocked_models'])}",
-        f"- provider_failed: {_comma_or_none(summary['provider_failed_models'])}",
-        f"- prochain lot recommande: {next_lot}",
-    ]
-    if summary["pending_manual_action"]:
-        pending = summary["pending_manual_action"]
-        lines.extend(
-            [
-                f"- checkpoint manuel en attente: {pending['reason']}",
-                f"- commande preparee: `{pending['command']}`",
-                f"- reprise: `python3 scripts/run_next_lots.py --resume {pending['resume_state']}`",
-            ]
-        )
-    return "\n".join(lines)
-
-
-def _render_todo_done_sync(summary: dict[str, Any]) -> str:
-    lines = [
-        "- orchestrateur `scripts/run_next_lots.py` disponible",
-        "- manifeste `automation/next_lots.toml` charge",
-        "- derniers fichiers de suivi synchronisables via marqueurs `AUTO-SYNC`",
-        f"- dernier cycle automatise observe: {summary['updated_at']}",
-    ]
-    return "\n".join(lines)
-
-
-def _render_plan_sync(summary: dict[str, Any], next_lot: str) -> str:
-    lines = [
-        f"- dernier verdict automatise: {summary['updated_at']}",
-        f"- accepted: {_comma_or_none(summary['accepted_models'])}",
-        f"- gate atteint: {_comma_or_none(summary['reached_gate_models'])}",
-        f"- prochain lot calcule: {next_lot}",
-    ]
-    if summary["pending_manual_action"]:
-        lines.append(f"- checkpoint manuel requis: {summary['pending_manual_action']['reason']}")
-    return "\n".join(lines)
-
-
-def _render_readme_sync(summary: dict[str, Any], next_lot: str) -> str:
-    lines = [
-        f"- dernier cycle automatise: {summary['updated_at']}",
-        f"- reference locale actuelle: {_reference_label(summary)}",
-        f"- prochain lot utile: {next_lot}",
-        "- lancer un cycle: `python3 scripts/run_next_lots.py --lot full`",
-    ]
-    if summary["pending_manual_action"]:
-        lines.append(f"- checkpoint manuel en attente: {summary['pending_manual_action']['reason']}")
-    return "\n".join(lines)
-
-
-def _render_runbook_sync(summary: dict[str, Any], project_state: dict[str, Any], next_lot: str) -> str:
-    lines = [
-        f"- dernier cycle automatise: {summary['updated_at']}",
-        f"- chapitre courant detecte: {project_state.get('current_chapter') or 'aucun'}",
-        f"- reference locale actuelle: {_reference_label(summary)}",
-        f"- prochain lot utile: {next_lot}",
-    ]
-    if summary["pending_manual_action"]:
-        lines.append(f"- reprise attendue apres action manuelle: {summary['pending_manual_action']['resume_state']}")
-    return "\n".join(lines)
-
-
-def _render_mascarade_todo_sync(summary: dict[str, Any], next_lot: str) -> str:
-    lines = [
-        f"- dernier cycle ANE automatise: {summary['updated_at']}",
-        f"- accepted via runtime local: {_comma_or_none(summary['accepted_models'])}",
-        f"- gate atteint via runtime local: {_comma_or_none(summary['reached_gate_models'])}",
-        f"- blocage runtime principal: {next_lot}",
-    ]
-    if summary["pending_manual_action"]:
-        lines.append(f"- checkpoint runtime manuel: {summary['pending_manual_action']['reason']}")
-    return "\n".join(lines)
-
-
-def _render_mascarade_plan_sync(summary: dict[str, Any], next_lot: str) -> str:
-    lines = [
-        f"- dernier cycle ANE automatise: {summary['updated_at']}",
-        f"- reference locale ANE: {_reference_label(summary)}",
-        f"- prochain lot ANE a servir: {next_lot}",
-    ]
-    return "\n".join(lines)
-
-
-def _render_mascarade_readme_sync(summary: dict[str, Any], next_lot: str) -> str:
-    return "\n".join(
-        [
-            f"- dernier cycle ANE automatise: {summary['updated_at']}",
-            f"- etat de reference ANE: {_reference_label(summary)}",
-            f"- prochain lot utile cote pipeline: {next_lot}",
-        ]
-    )
-
-
-def _render_mascarade_runbook_sync(summary: dict[str, Any], next_lot: str) -> str:
-    lines = [
-        f"- dernier cycle ANE automatise: {summary['updated_at']}",
-        f"- meilleurs candidats actuels: {_top_candidates(summary['results'])}",
-        f"- prochain lot utile cote ANE: {next_lot}",
-    ]
-    if summary["pending_manual_action"]:
-        lines.append(f"- checkpoint runtime manuel: {summary['pending_manual_action']['reason']}")
-    return "\n".join(lines)
-
-
-def _reference_label(summary: dict[str, Any]) -> str:
-    if summary["accepted_models"]:
-        return summary["accepted_models"][0]
-    if summary["reached_gate_models"]:
-        return f"aucun accepted, meilleur diagnostic: {summary['reached_gate_models'][0]}"
-    return "aucune reference accepted"
-
-
-def _top_candidates(results: Iterable[ModelRunResult]) -> str:
-    candidates = []
-    for item in results:
-        if item.model in candidates:
-            continue
-        if item.model.startswith("apple-coreml:qwen3.5-4b") or item.model.startswith("ollama:qwen2.5:7b"):
-            candidates.append(item.model)
-    return ", ".join(candidates) if candidates else "aucun"
-
-
-def _comma_or_none(items: list[str]) -> str:
-    return ", ".join(items) if items else "aucun"
-
-
-def _render_comparison_markdown(state: RunState, results: list[ModelRunResult]) -> str:
-    lines = [
-        f"- dernier cycle automatise: {state.updated_at}",
-        "",
-        "| Modele | Categorie | Preflight | Smoke | Classification | Failed stage | Gate | Repairs | Notes |",
-        "|---|---|---|---|---|---|---|---:|---|",
-    ]
-    for item in results:
-        lines.append(
-            "| {model} | {category} | {preflight} | {smoke} | {classification} | {failed_stage} | {gate} | {repairs} | {notes} |".format(
-                model=item.model,
-                category=item.category,
-                preflight="OK" if item.preflight_ok else ("KO" if item.preflight_ok is False else "n/a"),
-                smoke="oui" if item.smoke_attempted else "non",
-                classification=item.classification,
-                failed_stage=item.failed_stage or "",
-                gate="oui" if item.reached_gate() else "non",
-                repairs=item.repair_attempts,
-                notes="; ".join(item.notes) if item.notes else "",
-            )
-        )
-    return "\n".join(lines)
-
-
-def _render_summary_markdown(state: RunState, results: list[ModelRunResult]) -> str:
-    summary = _build_summary(state, results)
-    lines = [
-        "# Résumé du cycle automatique",
-        "",
-        f"- lot: `{state.lot}`",
-        f"- démarré: `{state.started_at}`",
-        f"- mis à jour: `{state.updated_at}`",
-        f"- accepted: {_comma_or_none(summary['accepted_models'])}",
-        f"- gate atteint: {_comma_or_none(summary['reached_gate_models'])}",
-        f"- quality_blocked: {_comma_or_none(summary['quality_blocked_models'])}",
-        f"- provider_failed: {_comma_or_none(summary['provider_failed_models'])}",
-    ]
-    if state.pending_manual_action:
-        lines.extend(
-            [
-                "",
-                "## Checkpoint manuel",
-                f"- raison: {state.pending_manual_action['reason']}",
-                f"- commande: `{state.pending_manual_action['command']}`",
-                f"- reprise: `python3 scripts/run_next_lots.py --resume {state.pending_manual_action['resume_state']}`",
-            ]
-        )
-    if results:
-        lines.extend(["", "## Résultats", ""])
-        lines.append(_render_comparison_markdown(state, results))
-    return "\n".join(lines) + "\n"
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python3 scripts/run_next_lots.py")
     parser.add_argument("--manifest", default="automation/next_lots.toml")
-    parser.add_argument("--lot", default="full", choices=["full", "ensure_models", "runtime_preflight", "priority_models", "baselines", "tracking_sync"])
+    parser.add_argument("--lot", default="full", choices=["full", "ensure_models", "runtime_preflight", "priority_models", "baselines", "french_models", "tracking_sync"])
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--report-only", action="store_true")
