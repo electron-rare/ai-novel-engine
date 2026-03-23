@@ -45,8 +45,8 @@ ollama_models = [
 [lots.priority_models]
 models = [
   "mistral:mistral-large-latest",
-  "apple-coreml:qwen3-4b-instruct-2507-q4f16",
   "ollama:qwen2.5:7b",
+  "apple-coreml:qwen3-4b-instruct-2507-q4f16",
 ]
 
 [lots.baselines]
@@ -59,6 +59,7 @@ models = [
 models = [
   "mistral:mistral-large-latest",
   "ollama:mistral-nemo:latest",
+  "apple-coreml:qwen3-4b-instruct-2507-q4f16",
 ]
 
 [lots.preflight_only]
