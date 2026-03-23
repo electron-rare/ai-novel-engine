@@ -83,8 +83,8 @@ References:
 - [x] P0 Renforcer `gate_v1` contre les faux `outline_like` LLM sur prose narrative francaise (`mistral-nemo` prompté) — valide sur `automation/reports/20260322_mistral_nemo_judge_gatefix`
 - [x] P0 Retoucher `rewrite_v1` / `repair_v1` / `_repair_focus()` pour forcer une consequence immediate observable apres l'acte final, sans rouvrir la scene
 - [x] P0 Rejouer `qwen2.5:7b` et `mistral-nemo` apres cette retouche ciblee "consequence immediate"
-- [ ] P0 Isoler une variante prompt/repair pour `mistral-nemo` ou un profil narratif separe, sans perdre le gain `qwen2.5:7b`
-- [ ] P0 Garder `qwen2.5:7b` comme baseline Ollama de reference et le rejouer dans `priority_models` complet
+- [x] P0 Isoler une variante prompt/repair pour `mistral-nemo` — `rewrite_v2_nemo.txt` + `repair_v2_nemo.txt` + `prompt_profile` dans PromptStore
+- [x] P0 Garder `qwen2.5:7b` comme baseline Ollama — passe dans priority_models via Mascarade P2P (2026-03-23)
 
 ### Qualite code (P1, lot refonte)
 - [x] P0 Extraire une couche `core/runtime/*` claire (profil, contraintes, healthcheck) sans casser la facade `core/generation/provider.py`
@@ -154,18 +154,18 @@ References:
 - [x] P1 Verifier la purge reports en dry-run (`prune --days 14`) — 2 candidats, dont 1 reference a proteger
 - [ ] P1 Garder `python3 scripts/reports_ops.py prune --days 14` en dry-run par defaut tant que les reports references ne sont pas marques
 - [x] P1 Analyser logs et tenter purge chirurgicale (`analyze-logs --top 15`, `prune --days 14 --delete-workspaces`) — 0 suppression necessaire
-- [ ] P0 Brancher `priority_models` sur `ollama:qwen2.5:7b` comme nouvelle baseline Ollama `accepted`
+- [x] P0 Brancher `priority_models` sur `ollama:qwen2.5:7b` — fait via Mascarade routing (2026-03-23)
 - [ ] P0 Creer une retouche specifique `mistral-nemo` moins directive sur la structure de fin, puis rejouer `automation/reports/20260322_mistral_nemo_judge_consequencefix`
 
 ## Auto-sync
 <!-- AUTO-SYNC:ANE-TODO-ACTIVE:START -->
-- dernier cycle automatique: 2026-03-23T13:00:00+00:00
-- modeles accepted: apple-coreml:qwen3-4b-instruct-2507-q4f16 (nouveau, 3x plus rapide), mistral:mistral-large-latest (cloud, batch API validee)
-- ancienne ref remplacee: apple-coreml:qwen3.5-4b-onnx-q4f16
-- modeles ayant atteint gate: ollama:qwen2.5:7b, apple-coreml:qwen2.5-0.5b-instruct-onnx, ollama:qwen2.5:1.5b, ollama:mistral-nemo:latest
-- quality_blocked: apple-coreml:qwen2.5-0.5b-instruct-onnx (hallucinations), ollama:qwen2.5:1.5b, ollama:mistral-nemo:latest
-- disqualifie: apple-coreml:stateful-mistral7b-instruct-int4-coreml (timeout >300s)
-- routing: tout via Mascarade `:8100` — Mistral API, Apple CoreML `:8201`, Ollama P2P VM
-- prochain lot: priority_models avec mistral-large + qwen3-4b-2507 + qwen2.5:7b
-- checkpoint: runtime Apple arrete, modeles decharges — lancer le runtime avant priority_models Apple
+- dernier cycle automatique: 2026-03-23T15:52:31+00:00
+- modeles accepted: mistral:mistral-large-latest
+- modeles ayant atteint gate: mistral:mistral-large-latest, ollama:mistral-nemo:latest
+- quality_blocked: ollama:mistral-nemo:latest
+- provider_failed: ollama:qwen2.5:7b
+- prochain lot recommande: Reference locale reconfirmee; retablir le runtime des modeles provider_failed puis reprendre rewrite/repair sur les modeles bloques a gate.
+- checkpoint manuel en attente: Le runtime Apple sert `aucun modèle` au lieu de `qwen3-4b-instruct-2507-q4f16`.
+- commande preparee: `bash scripts/prepare_runtime_step.sh --apple-model qwen3-4b-instruct-2507-q4f16 --resume-state /Users/electron/Documents/Lelectron_rare/ai-novel-engine/automation/state/next_lots_state.json --ane-script /Users/electron/Documents/Lelectron_rare/ai-novel-engine/scripts/run_next_lots.py`
+- reprise: `python3 scripts/run_next_lots.py --resume /Users/electron/Documents/Lelectron_rare/ai-novel-engine/automation/state/next_lots_state.json`
 <!-- AUTO-SYNC:ANE-TODO-ACTIVE:END -->

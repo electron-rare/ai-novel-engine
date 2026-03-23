@@ -15,8 +15,24 @@ class PromptStore:
         self.prompts_dir = root / "prompts"
         self.builtin_prompts_dir = Path(__file__).resolve().parents[1] / "prompts"
 
-    def render(self, name: str, **context: object) -> str:
-        path = self.prompts_dir / f"{name}_v1.txt"
+    def render(self, name: str, *, prompt_profile: str | None = None, **context: object) -> str:
+        """Render a prompt template with optional model-specific profile.
+
+        Lookup order:
+        1. prompts/{name}_{profile}.txt  (if profile is set)
+        2. prompts/{name}_v1.txt         (default)
+        """
+        path = None
+        if prompt_profile:
+            candidate = self.prompts_dir / f"{name}_{prompt_profile}.txt"
+            if candidate.exists():
+                path = candidate
+            else:
+                candidate = self.builtin_prompts_dir / f"{name}_{prompt_profile}.txt"
+                if candidate.exists():
+                    path = candidate
+        if path is None:
+            path = self.prompts_dir / f"{name}_v1.txt"
         if not path.exists():
             path = self.builtin_prompts_dir / f"{name}_v1.txt"
         if not path.exists():

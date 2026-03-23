@@ -62,6 +62,10 @@ models = [
   "apple-coreml:qwen3-4b-instruct-2507-q4f16",
 ]
 
+# Prompt profiles per model (optional — falls back to v1 if not set)
+[prompt_profiles]
+"ollama:mistral-nemo:latest" = "v2_nemo"
+
 [lots.preflight_only]
 models = []
 
