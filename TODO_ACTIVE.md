@@ -40,6 +40,38 @@ References:
   - `:8110` repond a `/health` mais reste inutilisable pour `chat/completions`
   - `automation/next_lots.toml` repointe maintenant vers `/Users/electron/Documents/Projets/mascarade`
   - `scripts/smoke_local_generation.sh` aligne maintenant ses budgets non-Apple sur le manifeste (`rewrite=1024`, `repair=1536`)
+- cote app (2026-03-25):
+  - `app_AI-novel-engine` integre maintenant `Mascarade Core` et `Mascarade API` pour `agents`, `models` et `chat/completions`
+  - le panneau `Generation` affiche `provider_status` (`actif`, `configure`, `unauthorized`, erreur runtime) et le preset recommande suit maintenant le premier modele reellement actif
+  - un `Wizard Agents` dedie guide maintenant l'usage des agents Mascarade (`source -> catalogue -> brief -> routage -> run -> apply`) et persiste cet etat par projet
+  - le `Wizard Agents` garde maintenant un historique recent des runs agent et affiche une comparaison `brouillon / sortie agent` avant application
+  - le `Copilot / Writing Tools` sait lancer l'agent Mascarade selectionne, reinjecter sa reponse dans le fil Copilot, puis comparer inline `brouillon courant` / `derniere reponse Copilot` / `dernier manuscrit pipeline`
+  - le lot `Copilot hybride` a demarre: les requetes Copilot passent maintenant par une couche `CopilotService` avec fallback automatique `Apple Intelligence -> backend`
+  - le `Copilot` consomme maintenant un contexte ANE outille (`scene`, `brouillon`, `prompt`, `gate`, `manuscrit`, `agent`) prepare hors de l'UI pour les futures integrations `App Intents`
+  - le `Copilot` ajoute maintenant un RAG local-first sur le graphe projet et les artefacts pipeline, avec visualisation des extraits recuperes dans l'app
+  - les premieres actions outillees du `Copilot` sont maintenant reexecutables depuis le panneau de contexte (`scene`, `gate`, `manuscrit`, `agent`, `pipeline`)
+  - les ecritures destructives du brouillon depuis le `Copilot` ou un agent Mascarade demandent maintenant confirmation
+  - l'app expose maintenant un preset `MLX local` `:8092` avec `mlx-community/Ministral-3-3B-Instruct-2512-4bit` et un script `scripts/mlx_runtime.sh` pour diagnostiquer / demarrer le runtime
+  - l'app expose maintenant une bibliotheque locale de modeles HF/MLX (cache HF dedie, conversion MLX, nettoyage source optionnel, activation) et un export dataset JSONL compatible `KIKI-models-tuning`
+  - la refonte UI du 2 avril recentre maintenant l'app sur trois axes (`Ecrire`, `IA`, `Analyser & Ops`), avec un header a signaux et un inspecteur tabule `Contexte / Runtime / Pipeline`
+  - un nouvel ecran `Runtime & modeles` centralise maintenant la configuration IA, les providers Mascarade, le runtime MLX, la bibliotheque locale HF/MLX et l'export dataset KIKI
+  - les telechargements HF affichent maintenant une progression reelle, une annulation propre et un token HF optionnel cote app
+  - l'app expose maintenant un preflight `compatibilite MLX`; `croissantllm/CroissantLLMChat-v0.1` est telecharge localement et classe `Convertible MLX`
+  - `croissantllm/CroissantLLMChat-v0.1` a maintenant aussi un smoke reel MLX local valide (`~812M`, footprint stable `~3.7G`, pic `~6.7G`, `~1.0-1.8 s`), mais le replay ANE reel reste insuffisant (`repair_v1` corrompu, `gate/judge` fragiles), donc pas encore de promotion `Qualite FR`
+  - le 2 avril, `mlx-community/Ministral-3-3B-Instruct-2512-4bit` a ete telecharge et valide en reel sur `:8092` (`health`, `v1/models`, `v1/chat/completions`)
+  - le 2 avril, `mlx-community/Qwen2.5-7B-Instruct-4bit` a ete telecharge et rejoue en reel sur `:8092`; il tient le JSON parseable sur `gate/judge` sous `~4.9G` de footprint et `~5.7G` de pic memoire, mais pas encore le contrat ANE complet sans post-traitement schema/consistance
+  - l'app expose maintenant un preset `Mistral local` pointant vers `http://127.0.0.1:8091` avec `ollama:mistral-nemo:latest` pour un chemin local type TurboQuant / llama.cpp
+  - l'app expose aussi deux profils FR explicites: `croissantllm/CroissantLLMChat-v0.1` (`FR local experimental`) et `croissantllm/CroissantLLMBase` (`R&D ANE`)
+  - reverification ANE du 2 avril: `mlx-community/Ministral-3-3B-Instruct-2512-4bit` sert bien un vrai `repair_v1` apres completion du cache, mais ni lui ni `CroissantLLMChat` ne respectent encore assez bien les contrats JSON `gate/judge` pour servir de moteur ANE strict local
+  - le lot `App Intents` expose maintenant l'ouverture de l'app, le resume de scene, l'ouverture de scene ciblee, une aide de rewrite locale, et le lancement du pipeline ANE
+  - la provenance exacte d'ecriture est maintenant persistee dans `DraftSnapshot.source` pour `Copilot`, agents, generation directe et pipeline
+  - verification bundle app du 29 mars: `validate-app-intents` confirme que les symboles intents sont bien dans le binaire, mais que l'exposition systeme reste bloquee par l'absence de metadonnees `App Intents` et un Xcode local casse
+- reverification runtime du 25 mars:
+  - `Mascarade Core` `:8100` repond a `health` et `v1/models`
+  - `Mascarade API` `:3100` repond a `health`, `v1/api/models` et `v1/api/agents/catalog`
+  - `local_server` expose maintenant `provider_status` / `v1/providers/status` et ne publie plus les providers non autorises comme disponibles
+  - `claude:claude-sonnet-4-6` passe maintenant en bout-en-bout sur `:8100/v1/chat/completions` et `:3100/api/v1/chat/completions`
+  - `mistral` et `openai` restent configures localement, mais sont correctement marques `unauthorized`
 - etat live reverifie (2026-03-16 session 3) :
   - `:8201` UP — `qwen3.5-4b-onnx-q4f16` actif
   - `:11434` UP
@@ -52,6 +84,7 @@ References:
 - fix `dense_bullet_list` : 4+ bullet lines = `outline_like` sans 2e marqueur
 - lot runtime extrait : `core/runtime/{config,models,client,health,policies}.py`
 - suite unitaire : 156 tests verts
+- le 2 avril, le pipeline ANE normalise maintenant les verdicts `gate/judge` avant persistence: aliases historiques (`incomplete`, `lacks_narrative_continuity`) unifies, labels inconnus filtres, doublons supprimes et `ready_for_manuscript` recalcule a partir des blockers effectifs
 
 ## Refonte runtime (P0)
 
@@ -85,6 +118,8 @@ References:
 - [x] P0 Rejouer `qwen2.5:7b` et `mistral-nemo` apres cette retouche ciblee "consequence immediate"
 - [x] P0 Isoler une variante prompt/repair pour `mistral-nemo` — `rewrite_v2_nemo.txt` + `repair_v2_nemo.txt` + `prompt_profile` dans PromptStore
 - [x] P0 Garder `qwen2.5:7b` comme baseline Ollama — passe dans priority_models via Mascarade P2P (2026-03-23)
+- [x] P1 Durcir la normalisation schema/consistance des verdicts `gate/judge` pour les petits modeles locaux avant persistence ANE
+- [ ] P1 Ajouter un post-traitement semantique optionnel pour les contradictions restantes (`summary` vs blockers) si on veut promouvoir `Qwen2.5-7B` comme evaluateur local ANE
 
 ### Qualite code (P1, lot refonte)
 - [x] P0 Extraire une couche `core/runtime/*` claire (profil, contraintes, healthcheck) sans casser la facade `core/generation/provider.py`
@@ -139,6 +174,7 @@ References:
 ## Bloque
 
 - [ ] P0 `ollama` natif 0.17.7 sur macOS 26.3.1 / Apple M5 echoue encore en generation sur `qwen2.5:7b` et `qwen2.5:1.5b` avec une erreur Metal / `HTTP 500` — contourne via `llama-server` sur `:8091`
+- [ ] P0 Les secrets locaux `Mistral` et `OpenAI` sont invalides/expirés sur cette machine; les corriger pour re-activer ces providers dans `Mascarade local_server`
 - [ ] P1 Le runtime Apple local ne sert qu'un seul `model_id` a la fois; tout switch Apple reste semi-manuel (`prepare_runtime_step.sh`)
 - [ ] P1 Le runtime remote `:8110` repond a `/health` mais reste inutilisable pour `POST /v1/chat/completions` (`Temporary failure in name resolution`)
 - [x] P1 `:8100` ne repond pas — CORRIGE (mascarade relance, UP)
@@ -159,12 +195,12 @@ References:
 
 ## Auto-sync
 <!-- AUTO-SYNC:ANE-TODO-ACTIVE:START -->
-- dernier cycle automatique: 2026-03-23T15:52:31+00:00
+- dernier cycle automatique: 2026-03-23T21:34:05+00:00
 - modeles accepted: mistral:mistral-large-latest
-- modeles ayant atteint gate: mistral:mistral-large-latest, ollama:mistral-nemo:latest
-- quality_blocked: ollama:mistral-nemo:latest
-- provider_failed: ollama:qwen2.5:7b
-- prochain lot recommande: Reference locale reconfirmee; retablir le runtime des modeles provider_failed puis reprendre rewrite/repair sur les modeles bloques a gate.
+- modeles ayant atteint gate: mistral:mistral-large-latest
+- quality_blocked: aucun
+- provider_failed: ollama:qwen2.5:7b, ollama:mistral-nemo:latest
+- prochain lot recommande: Reference locale reconfirmee; retablir le runtime des modeles provider_failed avant de poursuivre.
 - checkpoint manuel en attente: Le runtime Apple sert `aucun modèle` au lieu de `qwen3-4b-instruct-2507-q4f16`.
 - commande preparee: `bash scripts/prepare_runtime_step.sh --apple-model qwen3-4b-instruct-2507-q4f16 --resume-state /Users/electron/Documents/Lelectron_rare/ai-novel-engine/automation/state/next_lots_state.json --ane-script /Users/electron/Documents/Lelectron_rare/ai-novel-engine/scripts/run_next_lots.py`
 - reprise: `python3 scripts/run_next_lots.py --resume /Users/electron/Documents/Lelectron_rare/ai-novel-engine/automation/state/next_lots_state.json`

@@ -23,5 +23,23 @@ Consignes:
 - transformer chaque beat de structure en action, perception, decision, consequence et, si utile, dialogue
 - ne pas commenter la structure ni annoncer les scenes; les jouer directement
 - finir sur une vraie phrase complete avec une ponctuation finale
-- viser un chapitre bref mais complet, d'au moins 3 paragraphes substantiels
+- viser environ 600 a 800 mots, repartis en au moins 4 paragraphes substantiels
 - ne pas ajouter d'explication hors texte narratif
+
+Exemple de sortie INTERDITE (outline_like):
+```
+# Scène 1 — Arrivée
+Objectif: observer la ville
+- Elle entre dans la rue
+- Elle repère un indice
+Tension: hésitation
+Sortie: elle décide d'agir
+```
+
+Exemple de sortie CORRECTE:
+```
+Elle entra dans la rue par le côté obscur, là où les réverbères s'espacent et où les passants pressent le pas sans se retourner. Les pavés mouillés réfléchissaient les enseignes au loin. Elle s'arrêta devant une porte entrouverte, retint son souffle, puis aperçut le ticket froissé coincé dans le battant — exactement ce qu'on lui avait dit de chercher.
+```
+
+Commence le chapitre maintenant, directement en prose, sans titre ni label:
+

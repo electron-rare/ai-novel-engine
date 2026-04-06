@@ -102,6 +102,14 @@ def cmd_status(root: Path):
     else:
         print("\nEn attente de validation: aucun")
 
+    corrupted_meta = state.get("corrupted_meta", [])
+    if corrupted_meta:
+        print("\nMétadonnées corrompues:")
+        for item in corrupted_meta:
+            print(f"- {item['chapter']}: meta={item['meta_path']} | erreur: {item['error']}")
+    else:
+        print("\nMétadonnées corrompues: aucune")
+
     print("")
     return 0
 

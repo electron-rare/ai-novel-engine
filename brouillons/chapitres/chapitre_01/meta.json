@@ -1,0 +1,35 @@
+{
+  "chapter": "chapitre_01",
+  "started_at": "2026-03-16T17:21:18+00:00",
+  "status": "failed",
+  "last_status_message": "Échec à l'étape structure: Timeout du provider pendant l'étape 'structure' après 60s.",
+  "completed_stages": [],
+  "accepted": false,
+  "repair_attempts": 0,
+  "repair_models": [],
+  "stage_attempts": {
+    "structure": 1
+  },
+  "retry_stages": [],
+  "quality_blockers": [],
+  "provider": {
+    "kind": "OpenAICompatibleProvider",
+    "base_url": "http://127.0.0.1:8100",
+    "model": "apple-coreml:qwen3.5-4b-onnx-q4f16"
+  },
+  "artifacts": {
+    "intention": "/Users/electron/Documents/Lelectron_rare/ai-novel-engine/notes/intentions/chapitre_1.md",
+    "structure": "/Users/electron/Documents/Lelectron_rare/ai-novel-engine/structure/chapitres/chapitre_01.md",
+    "draft_v1": "/Users/electron/Documents/Lelectron_rare/ai-novel-engine/brouillons/chapitres/chapitre_01/draft_v1.md",
+    "critique_v1": "/Users/electron/Documents/Lelectron_rare/ai-novel-engine/brouillons/chapitres/chapitre_01/critique_v1.md",
+    "draft_v2": "/Users/electron/Documents/Lelectron_rare/ai-novel-engine/brouillons/chapitres/chapitre_01/draft_v2.md",
+    "repair_latest": null,
+    "repairs": [],
+    "gate_v1": "/Users/electron/Documents/Lelectron_rare/ai-novel-engine/brouillons/chapitres/chapitre_01/gate_v1.json",
+    "manuscript": "/Users/electron/Documents/Lelectron_rare/ai-novel-engine/manuscrit/chapitre_01.md",
+    "memory_summary": "/Users/electron/Documents/Lelectron_rare/ai-novel-engine/memoire/chapitres/chapitre_01.md"
+  },
+  "failed_stage": "structure",
+  "error": "Timeout du provider pendant l'étape 'structure' après 60s.",
+  "finished_at": "2026-03-16T17:24:21+00:00"
+}

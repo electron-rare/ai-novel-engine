@@ -73,37 +73,31 @@ class ProjectState:
         return latest
 
     def failed_chapters(self) -> list[dict[str, object]]:
-        failures: list[dict[str, object]] = []
-        for chapter, draft_dir in discover_chapter_dirs(self.drafts):
-            meta = self._load_meta(draft_dir)
-            if not meta or meta.get("status") != "failed":
-                continue
-            failures.append(
-                {
-                    "chapter": chapter.slug,
-                    "status": str(meta.get("status", "")),
-                    "failed_stage": str(meta.get("failed_stage", "")),
-                    "meta_path": str(draft_dir / "meta.json"),
-                    "retry_stages": self._retry_stages(meta),
-                    "last_status_message": str(meta.get("last_status_message", "")).strip(),
-                }
-            )
-        return failures
+        return [
+            {
+                "chapter": chapter.slug,
+                "status": str(meta.get("status", "")),
+                "failed_stage": str(meta.get("failed_stage", "")),
+                "meta_path": str(draft_dir / "meta.json"),
+                "retry_stages": self._retry_stages(meta),
+                "last_status_message": str(meta.get("last_status_message", "")).strip(),
+            }
+            for chapter, draft_dir, meta in self._iter_chapters_with_status("failed")
+        ]
 
     def quality_blocked_chapters(self) -> list[dict[str, object]]:
-        blocked: list[dict[str, object]] = []
-        for chapter, draft_dir in discover_chapter_dirs(self.drafts):
-            meta = self._load_meta(draft_dir)
-            if not meta or meta.get("status") != "quality_blocked":
-                continue
+        result: list[dict[str, object]] = []
+        for chapter, draft_dir, meta in self._iter_chapters_with_status("quality_blocked"):
             artifacts = meta.get("artifacts", {})
             if not isinstance(artifacts, dict):
                 artifacts = {}
             raw_blockers = meta.get("quality_blockers")
-            quality_blockers = []
-            if isinstance(raw_blockers, list):
-                quality_blockers = [str(item).strip() for item in raw_blockers if str(item).strip()]
-            blocked.append(
+            quality_blockers = (
+                [str(item).strip() for item in raw_blockers if str(item).strip()]
+                if isinstance(raw_blockers, list)
+                else []
+            )
+            result.append(
                 {
                     "chapter": chapter.slug,
                     "status": str(meta.get("status", "")),
@@ -118,18 +112,15 @@ class ProjectState:
                     "last_status_message": str(meta.get("last_status_message", "")).strip(),
                 }
             )
-        return blocked
+        return result
 
     def awaiting_acceptance(self) -> list[dict[str, object]]:
-        pending: list[dict[str, object]] = []
-        for chapter, draft_dir in discover_chapter_dirs(self.drafts):
-            meta = self._load_meta(draft_dir)
-            if not meta or meta.get("status") != "awaiting_acceptance":
-                continue
+        result: list[dict[str, object]] = []
+        for chapter, draft_dir, meta in self._iter_chapters_with_status("awaiting_acceptance"):
             artifacts = meta.get("artifacts", {})
             if not isinstance(artifacts, dict):
                 artifacts = {}
-            pending.append(
+            result.append(
                 {
                     "chapter": chapter.slug,
                     "status": str(meta.get("status", "")),
@@ -143,7 +134,7 @@ class ProjectState:
                     "last_status_message": str(meta.get("last_status_message", "")).strip(),
                 }
             )
-        return pending
+        return result
 
     def retry_stages(self) -> dict[str, list[str]]:
         retries: dict[str, list[str]] = {}
@@ -155,6 +146,21 @@ class ProjectState:
             if stages:
                 retries[chapter.slug] = stages
         return retries
+
+    def corrupted_meta(self) -> list[dict[str, str]]:
+        corrupted: list[dict[str, str]] = []
+        for chapter, draft_dir in discover_chapter_dirs(self.drafts):
+            _payload, error = self._read_meta(draft_dir)
+            if error is None:
+                continue
+            corrupted.append(
+                {
+                    "chapter": chapter.slug,
+                    "meta_path": str(draft_dir / "meta.json"),
+                    "error": error,
+                }
+            )
+        return corrupted
 
     def summary(self) -> dict[str, object]:
         return {
@@ -175,19 +181,32 @@ class ProjectState:
             "quality_blocked_chapters": self.quality_blocked_chapters(),
             "awaiting_acceptance": self.awaiting_acceptance(),
             "retry_stages": self.retry_stages(),
+            "corrupted_meta": self.corrupted_meta(),
         }
 
+    def _iter_chapters_with_status(self, status: str):
+        for chapter, draft_dir in discover_chapter_dirs(self.drafts):
+            meta = self._load_meta(draft_dir)
+            if meta and meta.get("status") == status:
+                yield chapter, draft_dir, meta
+
     def _load_meta(self, draft_dir: Path) -> dict[str, object] | None:
+        payload, _error = self._read_meta(draft_dir)
+        return payload
+
+    def _read_meta(self, draft_dir: Path) -> tuple[dict[str, object] | None, str | None]:
         meta_path = draft_dir / "meta.json"
         if not meta_path.exists():
-            return None
+            return None, None
         try:
             payload = json.loads(meta_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return None
+        except OSError as exc:
+            return None, f"{exc.__class__.__name__}: {exc}"
+        except json.JSONDecodeError as exc:
+            return None, f"JSONDecodeError: {exc.msg} (line {exc.lineno}, column {exc.colno})"
         if not isinstance(payload, dict):
-            return None
-        return payload
+            return None, "Le meta.json ne contient pas un objet JSON."
+        return payload, None
 
     def _retry_stages(self, meta: dict[str, object]) -> list[str]:
         raw = meta.get("retry_stages")

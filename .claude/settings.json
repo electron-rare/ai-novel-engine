@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s http://127.0.0.1:8091/health)",
+      "Bash(curl -s http://127.0.0.1:8091/v1/models)",
+      "Bash(make test:*)",
+      "Bash(python3 scripts/run_next_lots.py --lot french_models)",
+      "Bash(tee /tmp/lot_french_models.log)",
+      "Bash(tee /tmp/lot_french_models2.log)"
+    ]
+  }
+}

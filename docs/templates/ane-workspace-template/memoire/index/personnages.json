@@ -1,0 +1,21 @@
+{
+  "Elise Varenne": {
+    "name": "Elise Varenne",
+    "role": "Protagoniste. Observe la fracture avant les autres.",
+    "desire": "Comprendre ce qui se deforme et proteger ce qui compte encore.",
+    "contradiction": "Cherche la verite, mais vit deja sur un mensonge qu'elle entretient.",
+    "chapters": [
+      "chapitre_01"
+    ]
+  },
+  "Abel Sorn": {
+    "name": "Abel Sorn",
+    "role": "Allie ambigu. Oriente Elise sans tout lui dire.",
+    "desire": "Garder le controle du rythme et des informations.",
+    "contradiction": "Veut sauver Elise, mais seulement a condition qu'elle reste dependante de lui.",
+    "chapters": [
+      "chapitre_01"
+    ]
+  }
+}
+

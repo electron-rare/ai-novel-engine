@@ -1,0 +1,15 @@
+[defaults]
+remote_health_path = "/health"
+remote_core_port = 8100
+local_bind_host = "127.0.0.1"
+ssh_connect_timeout_seconds = 4
+
+[[hosts]]
+name = "tower"
+ssh_target = "clems@192.168.120"
+local_tunnel_port = 8110
+
+[[hosts]]
+name = "kxkm"
+ssh_target = "kxkm@kxkm-ai"
+local_tunnel_port = 8111

@@ -27,10 +27,36 @@ Consignes impératives:
 - supprimer completement les mots `objectif`, `conflit`, `sortie`, `Scène`, `scene`, `Tension` s'ils apparaissent comme labels ou sous-titres
 - transformer toute structure, note ou checklist en scene(s) jouee(s) avec actions, perceptions et consequences
 - conserver l'intention et les informations utiles deja presentes
-- allonger si besoin pour obtenir une scene complete et continue
+- viser en priorite une scene complete et non repetitive; la plupart des sorties utiles feront entre 500 et 700 mots, mais n'etire jamais le texte par repetition mecanique pour atteindre un quota
 - montrer la scene au lieu de la resumer depuis l'exterieur
 - chaque paragraphe doit produire une action, une reaction ou une consequence concrete
-- finir le dernier paragraphe sur une decision nette suivie d'une consequence immediate
+- dans le dernier tiers, forcer une action irreversible ou couteuse que le personnage principal execute tout de suite; pas une simple intention ou promesse d'agir plus tard
+- la consequence immediate doit se produire dans le meme lieu et la meme minute: reaction adverse, blessure, cri, poursuite, alarme, preuve detruite, porte claquee ou point de non-retour visible
+- dans les 4 dernieres phrases, respecter cette progression: decision nette, action immediate, consequence perceptible, phrase de cloture complete
+- finir le dernier paragraphe sur une decision nette suivie d'une consequence immediate (observable, pas abstraite)
+- interdit en fin de scene: repartir vers une prochaine etape, annoncer une cible future ou rouvrir une nouvelle piste avant d'avoir montre l'effet immediat de l'acte final
+- si une action, un lieu, un indice ou une decouverte a deja eu lieu, ne la rejoue pas une seconde fois pour remplir le texte; compacter la repetition et avancer vers la consequence
+- si le brouillon contient deja les bons evenements mais les resume trop vite, decompresser la scene au lieu d'inventer un autre plan
+- distinguer prose faible et scene incomplete: si la scene n'est pas encore fermee, aller jusqu'a la consequence concrete au lieu d'ajouter des commentaires explicatifs
 $repair_focus
 - finir obligatoirement sur une vraie phrase complete avec une ponctuation finale
+- ne jamais finir sur une suspension (pas de "...", pas de phrase coupee, pas d'annonce d'action future sans action executee)
 - ne rien ajouter avant ou apres le chapitre
+
+Exemple de sortie INTERDITE (outline_like):
+```
+# Réparation
+Scène 1: arrivée
+- action 1
+- action 2
+Résultat: elle décide
+```
+
+Exemple de sortie CORRECTE (style attendu — ne reproduis pas ce texte, écris ta propre scène):
+```
+Il poussa la grille du jardin sans la regarder. Les herbes hautes lui arrivaient aux genoux et le chemin de gravier avait disparu sous les années. Il s'arrêta devant la fenêtre condamnée, posa la main à plat sur le bois gonflé d'humidité, et comprit qu'il était le dernier à se souvenir de ce que la maison avait été.
+```
+
+IMPORTANT: n'utilise pas le texte de l'exemple ci-dessus. Génère une réparation originale basée sur le brouillon et l'intention fournis plus haut.
+
+Commence la réparation maintenant, directement en prose, sans titre ni label:

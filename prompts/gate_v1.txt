@@ -4,8 +4,14 @@ Ne mets aucun texte avant ou après le JSON.
 Ne mets aucun bloc Markdown.
 Le but est de decider si ce texte peut etre promu dans le manuscrit.
 Bloque si le texte ressemble encore a un plan, s'il semble coupe avant sa fin, ou s'il manque une vraie continuite narrative.
-Ne bloque pas `outline_like` si le texte reste en prose continue, sans titres, sans puces et sans labels visibles, meme s'il est simple ou sobre.
-Utilise `outline_like` seulement s'il reste des traces visibles de plan, de checklist, de resume de scene, d'intitules structurants ou d'ecriture meta.
+Ce garde-fou principal juge surtout la forme manuscrite exploitable; il ne doit pas surdiagnostiquer un simple style faible comme une scene incomplete.
+Ne bloque pas `outline_like` si le texte est composé uniquement de paragraphes de prose narrative, sans aucun titre (`#`), sans aucune puce (`-`, `*`), sans numérotation, sans labels (`Scène:`, `Objectif:`, etc.) et sans résumé méta.
+Si le texte contient uniquement des phrases narratives en prose, meme courtes ou répétitives, il n'est PAS `outline_like`.
+Si tu hesites entre `outline_like` et prose narrative faible, choisis prose narrative faible: un mot comme `objectif`, `tension` ou `scene` a l'interieur d'une phrase normale ne suffit jamais a bloquer en `outline_like`.
+Utilise `outline_like` seulement si le texte contient encore des marqueurs visuels de plan: titres Markdown, puces, listes numérotées, labels structurants ou descriptions extérieures de scène.
+Utilise `blockers` seulement si le texte n'est pas promouvable tel quel.
+Si la prose est faible mais qu'une vraie scene complete existe deja, prefere une recommandation a un blocage.
+Verifie aussi qu'une decision risquee apparait bien dans le dernier tiers et qu'une consequence immediate est visible avant la fin; si c'est deja present, n'ajoute aucun blocker a ce sujet.
 Limite-toi a 1 phrase de resume, 4 blockers max et 4 recommandations max.
 
 Chapitre cible: $chapter_slug

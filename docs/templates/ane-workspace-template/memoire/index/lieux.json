@@ -1,0 +1,10 @@
+{
+  "Le quai nord": {
+    "name": "Le quai nord",
+    "description": "Zone portuaire vide, bruyante, balayee par le vent. Bon lieu de premiere fracture.",
+    "chapters": [
+      "chapitre_01"
+    ]
+  }
+}
+

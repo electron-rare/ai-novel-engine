@@ -1,95 +1,17 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 import json
-import os
-import random
-import socket
-import time
 from typing import Mapping
-from urllib import error, request
+from urllib import request
+
+from core.runtime.client import ChatRequest, OpenAIChatRuntimeClient, RuntimeClientError
+from core.runtime.config import OpenAICompatibleRuntimeConfig, STAGE_MAX_TOKENS_ENV
+from core.runtime.errors import ProviderConfigurationError, ProviderError
 
 
-class ProviderError(RuntimeError):
-    """Raised when a text generation provider fails."""
-
-
-class ProviderConfigurationError(ProviderError):
-    """Raised when the provider environment is incomplete."""
-
-
-STAGE_MAX_TOKENS_ENV = {
-    "structure": "ANE_MAX_TOKENS_STRUCTURE",
-    "draft": "ANE_MAX_TOKENS_DRAFT",
-    "critique": "ANE_MAX_TOKENS_CRITIQUE",
-    "rewrite": "ANE_MAX_TOKENS_REWRITE",
-    "gate": "ANE_MAX_TOKENS_GATE",
-    "repair": "ANE_MAX_TOKENS_REPAIR",
-    "memory": "ANE_MAX_TOKENS_MEMORY",
-}
-
-
-def _parse_positive_int(raw_value: str, *, env_name: str) -> int:
-    try:
-        value = int(raw_value)
-    except ValueError as exc:
-        raise ProviderConfigurationError(f"{env_name} doit être un entier.") from exc
-    if value <= 0:
-        raise ProviderConfigurationError(f"{env_name} doit être supérieur à zéro.")
-    return value
-
-
-@dataclass(frozen=True)
-class ProviderConfig:
-    provider: str
-    base_url: str
-    api_key: str
-    model: str
-    timeout: float
-    max_tokens: int
-    stage_max_tokens: Mapping[str, int]
-
-    @classmethod
-    def from_env(cls, env: Mapping[str, str] | None = None) -> "ProviderConfig":
-        source = env or os.environ
-        provider = source.get("ANE_PROVIDER", "openai_compatible").strip() or "openai_compatible"
-        base_url = source.get("ANE_BASE_URL", "").strip()
-        model = source.get("ANE_MODEL", "").strip()
-        api_key = source.get("ANE_API_KEY", "").strip()
-        timeout_value = source.get("ANE_TIMEOUT", "60").strip() or "60"
-        max_tokens_value = source.get("ANE_MAX_TOKENS", "4096").strip() or "4096"
-
-        try:
-            timeout = float(timeout_value)
-        except ValueError as exc:
-            raise ProviderConfigurationError("ANE_TIMEOUT doit être un nombre.") from exc
-
-        max_tokens = _parse_positive_int(max_tokens_value, env_name="ANE_MAX_TOKENS")
-        stage_max_tokens: dict[str, int] = {}
-        for stage_name, env_name in STAGE_MAX_TOKENS_ENV.items():
-            raw_stage_value = source.get(env_name, "").strip()
-            if not raw_stage_value:
-                continue
-            stage_max_tokens[stage_name] = _parse_positive_int(raw_stage_value, env_name=env_name)
-
-        return cls(
-            provider=provider,
-            base_url=base_url,
-            api_key=api_key,
-            model=model,
-            timeout=timeout,
-            max_tokens=max_tokens,
-            stage_max_tokens=stage_max_tokens,
-        )
-
-    def max_tokens_for_stage(self, stage: str, explicit: int | None = None) -> int:
-        if explicit is not None:
-            return explicit
-        return self.stage_max_tokens.get(stage, self.max_tokens)
-
-    def with_model(self, model: str) -> "ProviderConfig":
-        return replace(self, model=model)
+ProviderConfig = OpenAICompatibleRuntimeConfig
 
 
 @dataclass(frozen=True)
@@ -122,118 +44,27 @@ class OpenAICompatibleProvider(GenerationProvider):
         if not config.model:
             raise ProviderConfigurationError("ANE_MODEL est requis pour le provider openai_compatible.")
         self.config = config
+        self.client = OpenAIChatRuntimeClient(
+            config.to_runtime_profile(),
+            opener=request.urlopen,
+        )
 
     def generate(self, prompt_request: GenerationRequest) -> GenerationResponse:
-        payload: dict[str, object] = {
-            "model": self.config.model,
-            "messages": self._build_messages(prompt_request),
-            "temperature": prompt_request.temperature,
-            "max_tokens": self.config.max_tokens_for_stage(
-                prompt_request.stage,
-                prompt_request.max_tokens,
-            ),
-        }
-        if prompt_request.response_format == "json":
-            payload["response_format"] = {"type": "json_object"}
-
-        body = json.dumps(payload).encode("utf-8")
-        headers = {"Content-Type": "application/json"}
-        if self.config.api_key:
-            headers["Authorization"] = f"Bearer {self.config.api_key}"
-
-        http_request = request.Request(
-            self._chat_completions_url(),
-            data=body,
-            headers=headers,
-            method="POST",
-        )
-
-        _RETRYABLE_HTTP_CODES = {429, 500, 502, 503}
-        _MAX_RETRIES = 3
-        _BASE_DELAY = 1.0
-        _MAX_DELAY = 10.0
-
-        last_exc: Exception | None = None
-        for attempt in range(_MAX_RETRIES):
-            try:
-                with request.urlopen(http_request, timeout=self.config.timeout) as response:
-                    raw_payload = json.loads(response.read().decode("utf-8"))
-                break
-            except error.HTTPError as exc:
-                if exc.code in _RETRYABLE_HTTP_CODES and attempt < _MAX_RETRIES - 1:
-                    last_exc = exc
-                    delay = min(_BASE_DELAY * (2 ** attempt), _MAX_DELAY)
-                    delay += random.uniform(0, delay * 0.25)
-                    time.sleep(delay)
-                    continue
-                details = exc.read().decode("utf-8", errors="replace")
-                raise ProviderError(
-                    f"Le provider a répondu avec HTTP {exc.code} pendant l'étape '{prompt_request.stage}': {details}"
-                ) from exc
-            except (error.URLError, TimeoutError, socket.timeout) as exc:
-                if attempt < _MAX_RETRIES - 1:
-                    last_exc = exc
-                    delay = min(_BASE_DELAY * (2 ** attempt), _MAX_DELAY)
-                    delay += random.uniform(0, delay * 0.25)
-                    time.sleep(delay)
-                    continue
-                if isinstance(exc, error.URLError):
-                    raise ProviderError(
-                        f"Impossible de joindre le provider pendant l'étape '{prompt_request.stage}': {exc.reason}"
-                    ) from exc
-                raise ProviderError(
-                    f"Timeout du provider pendant l'étape '{prompt_request.stage}' après {self.config.timeout:.0f}s."
-                ) from exc
-            except json.JSONDecodeError as exc:
-                raise ProviderError(
-                    f"Réponse non JSON du provider pendant l'étape '{prompt_request.stage}'."
-                ) from exc
-        else:
-            raise ProviderError(
-                f"Le provider a échoué après {_MAX_RETRIES} tentatives pendant l'étape '{prompt_request.stage}'."
-            ) from last_exc
-
         try:
-            choice = raw_payload["choices"][0]
-            message = choice["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise ProviderError(
-                f"Réponse OpenAI-compatible invalide pendant l'étape '{prompt_request.stage}'."
-            ) from exc
-
-        content = self._normalize_message_content(message)
-        return GenerationResponse(
-            content=content,
-            model=str(raw_payload.get("model", self.config.model)),
-            raw=raw_payload,
-        )
-
-    def _build_messages(self, prompt_request: GenerationRequest) -> list[dict[str, str]]:
-        messages: list[dict[str, str]] = []
-        if prompt_request.system_prompt:
-            messages.append({"role": "system", "content": prompt_request.system_prompt})
-        messages.append({"role": "user", "content": prompt_request.prompt})
-        return messages
-
-    def _chat_completions_url(self) -> str:
-        base = self.config.base_url.rstrip("/")
-        if base.endswith("/chat/completions"):
-            return base
-        if base.endswith("/v1"):
-            return f"{base}/chat/completions"
-        return f"{base}/v1/chat/completions"
-
-    def _normalize_message_content(self, message: object) -> str:
-        if isinstance(message, str):
-            return message
-        if isinstance(message, list):
-            parts: list[str] = []
-            for item in message:
-                if isinstance(item, dict) and item.get("type") == "text":
-                    parts.append(str(item.get("text", "")))
-            if parts:
-                return "\n".join(parts)
-        raise ProviderError("Le provider n'a pas renvoyé de contenu texte exploitable.")
+            response = self.client.generate(
+                ChatRequest(
+                    stage=prompt_request.stage,
+                    prompt=prompt_request.prompt,
+                    response_format=prompt_request.response_format,
+                    temperature=prompt_request.temperature,
+                    system_prompt=prompt_request.system_prompt,
+                    max_tokens=prompt_request.max_tokens,
+                )
+            )
+        except RuntimeClientError as exc:
+            message = str(exc).replace("runtime", "provider")
+            raise ProviderError(message) from exc
+        return GenerationResponse(content=response.content, model=response.model, raw=response.raw)
 
 
 class MockGenerationProvider(GenerationProvider):

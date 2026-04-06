@@ -3,136 +3,33 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
-import re
 
 from core.chapters import ChapterId
+from core.evaluation.models import NarrativeJudgeReport
+from core.json_payload import (
+    close_json_delimiters as _close_json_delimiters,
+    extract_json_object as _extract_json_object,
+    json_candidates as _json_candidates,
+    parse_json_object as _parse_json_object,
+    record_list as _record_list,
+    remove_trailing_commas as _remove_trailing_commas,
+    string_list as _string_list,
+    strip_code_fence as _strip_code_fence,
+)
 
-
-def _strip_code_fence(text: str) -> str:
-    payload = text.strip()
-    if not payload.startswith("```"):
-        return payload
-    lines = payload.splitlines()
-    if len(lines) >= 3 and lines[-1].strip() == "```":
-        return "\n".join(lines[1:-1]).strip()
-    return payload
-
-
-def _remove_trailing_commas(payload: str) -> str:
-    return re.sub(r",(\s*[}\]])", r"\1", payload)
-
-
-def _extract_json_object(payload: str) -> str | None:
-    start = payload.find("{")
-    if start == -1:
-        return None
-
-    depth = 0
-    in_string = False
-    escaped = False
-    for index in range(start, len(payload)):
-        char = payload[index]
-        if in_string:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-            continue
-        if char == '"':
-            in_string = True
-        elif char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return payload[start : index + 1]
-    return payload[start:]
-
-
-def _close_json_delimiters(payload: str) -> str:
-    stack: list[str] = []
-    in_string = False
-    escaped = False
-    for char in payload:
-        if in_string:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-            continue
-        if char == '"':
-            in_string = True
-        elif char == "{":
-            stack.append("}")
-        elif char == "[":
-            stack.append("]")
-        elif char in {"}", "]"} and stack and char == stack[-1]:
-            stack.pop()
-
-    repaired = payload.rstrip()
-    if repaired.endswith(","):
-        repaired = repaired[:-1].rstrip()
-    if in_string:
-        repaired += '"'
-    return repaired + "".join(reversed(stack))
-
-
-def _json_candidates(text: str) -> list[str]:
-    payload = _strip_code_fence(text)
-    candidates = [payload]
-
-    extracted = _extract_json_object(payload)
-    if extracted and extracted not in candidates:
-        candidates.append(extracted)
-
-    repaired: list[str] = []
-    for candidate in list(candidates):
-        trimmed = _remove_trailing_commas(candidate)
-        if trimmed not in candidates and trimmed not in repaired:
-            repaired.append(trimmed)
-        closed = _close_json_delimiters(trimmed)
-        if closed not in candidates and closed not in repaired:
-            repaired.append(closed)
-    candidates.extend(repaired)
-    return candidates
-
-
-def _parse_json_object(text: str) -> dict[str, object]:
-    last_error: Exception | None = None
-    for candidate in _json_candidates(text):
-        try:
-            data = json.loads(candidate)
-        except json.JSONDecodeError as exc:
-            last_error = exc
-            continue
-        if not isinstance(data, dict):
-            raise ValueError("La réponse JSON attendue doit être un objet.")
-        return data
-    raise ValueError(str(last_error) if last_error else "Réponse JSON illisible.")
-
-
-def _string_list(value: object) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [str(item).strip() for item in value if str(item).strip()]
-
-
-def _record_list(value: object, required_key: str) -> list[dict[str, str]]:
-    if not isinstance(value, list):
-        return []
-
-    normalized: list[dict[str, str]] = []
-    for item in value:
-        if not isinstance(item, dict):
-            continue
-        record = {str(key): str(val).strip() for key, val in item.items() if str(val).strip()}
-        if record.get(required_key):
-            normalized.append(record)
-    return normalized
+_GATE_BLOCKER_ALIASES = {
+    "incomplete": "incomplete_scene",
+    "lacks_narrative_continuity": "weak_narrative_continuity",
+}
+_ALLOWED_GATE_BLOCKERS = {
+    "too_short",
+    "truncated_ending",
+    "outline_like",
+    "weak_narrative_continuity",
+    "incomplete_scene",
+    "missing_risky_decision",
+    "missing_immediate_consequence",
+}
 
 
 @dataclass(frozen=True)
@@ -224,23 +121,49 @@ class ManuscriptGateReport:
     blockers: list[str]
     recommendations: list[str]
     heuristic_blockers: list[str]
+    judge_blockers: list[str] = field(default_factory=list)
+    judge_report: NarrativeJudgeReport | None = None
     raw: dict[str, object] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        blockers = _normalize_gate_blockers(self.blockers)
+        heuristic_blockers = _normalize_gate_blockers(self.heuristic_blockers)
+        judge_blockers = _normalize_gate_blockers(self.judge_blockers)
+        recommendations = _normalize_recommendations(self.recommendations)
+        summary = self.summary.strip() or "Diagnostic manuscrit indisponible."
+        ready = bool(self.ready_for_manuscript) and not blockers and not heuristic_blockers and not judge_blockers
+
+        object.__setattr__(self, "blockers", blockers)
+        object.__setattr__(self, "heuristic_blockers", heuristic_blockers)
+        object.__setattr__(self, "judge_blockers", judge_blockers)
+        object.__setattr__(self, "recommendations", recommendations)
+        object.__setattr__(self, "summary", summary)
+        object.__setattr__(self, "ready_for_manuscript", ready)
 
     @classmethod
     def from_response_text(cls, text: str) -> "ManuscriptGateReport":
         raw = _parse_json_object(text)
-        blockers = _string_list(raw.get("blockers"))
-        heuristic_blockers = _string_list(raw.get("heuristic_blockers"))
-        recommendations = _string_list(raw.get("recommendations"))
-        ready_default = not blockers and not heuristic_blockers
+        blockers = _normalize_gate_blockers(_string_list(raw.get("blockers")))
+        heuristic_blockers = _normalize_gate_blockers(_string_list(raw.get("heuristic_blockers")))
+        judge_blockers = _normalize_gate_blockers(_string_list(raw.get("judge_blockers")))
+        recommendations = _normalize_recommendations(_string_list(raw.get("recommendations")))
+        judge_report_payload = raw.get("judge_report")
+        judge_report = None
+        if isinstance(judge_report_payload, dict):
+            judge_report = NarrativeJudgeReport.from_response_text(json.dumps(judge_report_payload, ensure_ascii=False))
+            if not judge_blockers:
+                judge_blockers = list(judge_report.blockers)
+        ready_default = not blockers and not heuristic_blockers and not judge_blockers
         ready_for_manuscript = bool(raw.get("ready_for_manuscript", ready_default))
         summary = str(raw.get("summary", "")).strip() or "Diagnostic manuscrit indisponible."
         return cls(
-            ready_for_manuscript=ready_for_manuscript and not blockers and not heuristic_blockers,
+            ready_for_manuscript=ready_for_manuscript,
             summary=summary,
             blockers=blockers,
             recommendations=recommendations,
             heuristic_blockers=heuristic_blockers,
+            judge_blockers=judge_blockers,
+            judge_report=judge_report,
             raw=raw,
         )
 
@@ -258,15 +181,42 @@ class ManuscriptGateReport:
             blockers=list(blockers),
             recommendations=list(recommendations),
             heuristic_blockers=list(blockers),
+            judge_blockers=[],
+            judge_report=None,
             raw={},
         )
 
     def all_blockers(self) -> list[str]:
         ordered: list[str] = []
-        for value in [*self.heuristic_blockers, *self.blockers]:
+        for value in [*self.heuristic_blockers, *self.blockers, *self.judge_blockers]:
             if value not in ordered:
                 ordered.append(value)
         return ordered
+
+    def with_judge_report(self, judge_report: NarrativeJudgeReport) -> "ManuscriptGateReport":
+        recommendations = list(self.recommendations)
+        for item in judge_report.recommendations:
+            if item not in recommendations:
+                recommendations.append(item)
+
+        summary = self.summary
+        if judge_report.summary and judge_report.summary not in summary:
+            summary = f"{self.summary} | Juge narratif: {judge_report.summary}"
+
+        return ManuscriptGateReport(
+            ready_for_manuscript=self.ready_for_manuscript and judge_report.ready_for_manuscript and not judge_report.blockers,
+            summary=summary,
+            blockers=list(self.blockers),
+            recommendations=recommendations,
+            heuristic_blockers=list(self.heuristic_blockers),
+            judge_blockers=list(judge_report.blockers),
+            judge_report=judge_report,
+            raw={
+                **self.raw,
+                "judge_report": judge_report.to_dict(),
+                "judge_blockers": list(judge_report.blockers),
+            },
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -275,7 +225,31 @@ class ManuscriptGateReport:
             "blockers": list(self.blockers),
             "recommendations": list(self.recommendations),
             "heuristic_blockers": list(self.heuristic_blockers),
+            "judge_blockers": list(self.judge_blockers),
+            "judge_report": self.judge_report.to_dict() if self.judge_report is not None else None,
         }
+
+
+def _normalize_gate_blockers(values: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for value in values:
+        label = _GATE_BLOCKER_ALIASES.get(value.strip(), value.strip())
+        # Preserve unknown blocker labels so the gate cannot silently flip to ready
+        # when prompts or local models start emitting a new diagnostic code.
+        if not label or label in normalized:
+            continue
+        normalized.append(label)
+    return normalized
+
+
+def _normalize_recommendations(values: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for value in values:
+        text = value.strip()
+        if not text or text in normalized:
+            continue
+        normalized.append(text)
+    return normalized
 
 
 @dataclass(frozen=True)

@@ -35,6 +35,18 @@ de garder un pipeline lisible, reproductible et contrôlable par l'auteur:
 - autonomie complete "idee -> manuscrit final"
 - base de donnees opaque pour la mémoire
 
+## En-scope operationnel
+
+Le produit peut en revanche assumer un cockpit local simple si cela aide l'auteur
+ou l'operateur a:
+
+- relire l'etat du projet
+- suivre les lots automatiques
+- comprendre les blockers runtime et qualite
+- piloter les reports et la reprise
+
+Le TUI local est donc en-scope. Le "studio web riche" ne l'est toujours pas.
+
 ## Critere de valeur
 
 Le systeme est utile si un auteur peut:

@@ -11,7 +11,8 @@ from unittest import mock
 
 from cli.main import main
 from core.chapters import ChapterConflictError, ChapterId, resolve_chapter_file
-from core.generation.models import ControlReport, MemoryUpdate
+from core.evaluation.models import NarrativeJudgeReport
+from core.generation.models import ControlReport, ManuscriptGateReport, MemoryUpdate
 from core.generation.pipeline import GenerationPipeline
 from core.generation.provider import (
     GenerationRequest,
@@ -21,6 +22,8 @@ from core.generation.provider import (
     ProviderConfigurationError,
     ProviderError,
 )
+from core.runtime.health import probe_runtime_health
+from core.runtime.models import RuntimeProfile
 from core.project.loader import ProjectState
 
 
@@ -164,6 +167,202 @@ class GenerationPipelineTests(unittest.TestCase):
         self.assertEqual(meta["stage_attempts"]["gate"], 1)
         self.assertEqual(meta["stage_attempts"]["memory"], 1)
         self.assertEqual(meta["provider"]["kind"], "MockGenerationProvider")
+
+    def test_judge_is_disabled_by_default(self):
+        provider = self._provider()
+        pipeline = GenerationPipeline(self.root, provider=provider)
+
+        outcome = pipeline.generate_chapter("01", approval_callback=lambda _report, _path: True)
+
+        self.assertTrue(outcome.accepted)
+        self.assertNotIn("judge", [request.stage for request in provider.requests])
+        gate_payload = json.loads(outcome.gate_path.read_text(encoding="utf-8"))
+        self.assertIsNone(gate_payload["judge_report"])
+        self.assertEqual(gate_payload["judge_blockers"], [])
+
+    def test_judge_report_is_merged_into_gate_metadata_when_enabled(self):
+        provider = MockGenerationProvider(
+            {
+                "structure": "# Structure — chapitre_01\n\n## Objectif dramatique\nPoser une menace.\n",
+                "draft": "# Chapitre 01\n\nUn premier jet tendu.\n",
+                "critique": {
+                    "summary": "Le brouillon manque d'escalade au milieu.",
+                    "rewrite_required": True,
+                    "deviations": ["Le conflit tarde à apparaître."],
+                    "recommendations": ["Accentuer la menace dans la seconde scène."],
+                },
+                "rewrite": self._narrative_text(),
+                "gate": {
+                    "ready_for_manuscript": True,
+                    "summary": "Le chapitre est narratif et peut etre promu.",
+                    "blockers": [],
+                    "recommendations": ["resserrer la chute"],
+                    "heuristic_blockers": [],
+                },
+                "judge": {
+                    "ready_for_manuscript": True,
+                    "summary": "La decision finale est nette et sa consequence immediate est visible.",
+                    "blockers": [],
+                    "recommendations": ["rendre la tension du milieu plus nette"],
+                },
+                "memory": {
+                    "summary": "Le chapitre installe une menace diffuse autour de l'héroïne.",
+                    "characters": [{"name": "Ariane", "description": "Héroïne troublée par un signe avant-coureur."}],
+                    "locations": [{"name": "Port-Vieux", "description": "Quartier bruissant où la tension s'installe."}],
+                    "timeline_events": [{"event": "Ariane perçoit le premier signe du basculement.", "order_hint": "soir"}],
+                },
+            }
+        )
+        pipeline = GenerationPipeline(self.root, provider=provider)
+
+        with mock.patch.dict("os.environ", {"ANE_JUDGE_MODEL": "ollama:qwen2.5:7b"}, clear=False):
+            outcome = pipeline.generate_chapter("01", approval_callback=lambda _report, _path: True)
+
+        self.assertTrue(outcome.accepted)
+        self.assertEqual(
+            [request.stage for request in provider.requests],
+            ["structure", "draft", "critique", "rewrite", "gate", "judge", "memory"],
+        )
+        gate_payload = json.loads(outcome.gate_path.read_text(encoding="utf-8"))
+        self.assertEqual(gate_payload["judge_blockers"], [])
+        self.assertEqual(
+            gate_payload["judge_report"]["summary"],
+            "La decision finale est nette et sa consequence immediate est visible.",
+        )
+        self.assertIn("Juge narratif", gate_payload["summary"])
+        self.assertIn("rendre la tension du milieu plus nette", gate_payload["recommendations"])
+
+        meta = json.loads(outcome.meta_path.read_text(encoding="utf-8"))
+        self.assertEqual(meta["gate_report"]["judge_report"]["blockers"], [])
+
+    def test_judge_blockers_trigger_repair(self):
+        repaired_text = self._narrative_text()
+        provider = MockGenerationProvider(
+            {
+                "structure": "# Structure — chapitre_01\n\n## Objectif dramatique\nPoser une menace.\n",
+                "draft": "# Chapitre 01\n\nUn premier jet tendu.\n",
+                "critique": {
+                    "summary": "Le brouillon reste prudent.",
+                    "rewrite_required": True,
+                    "deviations": ["La scene n'ose pas aller jusqu'au point de bascule."],
+                    "recommendations": ["Rendre l'acte final plus couteux."],
+                },
+                "rewrite": self._narrative_text(),
+                "gate": [
+                    {
+                        "ready_for_manuscript": True,
+                        "summary": "Le chapitre est formellement exploitable.",
+                        "blockers": [],
+                        "recommendations": [],
+                        "heuristic_blockers": [],
+                    },
+                    {
+                        "ready_for_manuscript": True,
+                        "summary": "La version reparée peut etre promue.",
+                        "blockers": [],
+                        "recommendations": [],
+                        "heuristic_blockers": [],
+                    },
+                ],
+                "judge": [
+                    {
+                        "ready_for_manuscript": False,
+                        "summary": "La scene ne va pas jusqu'a une decision risquee suivie d'un effet immediat.",
+                        "blockers": ["missing_risky_decision", "missing_immediate_consequence"],
+                        "recommendations": ["forcer une decision couteuse", "montrer aussitot son effet"],
+                    },
+                    {
+                        "ready_for_manuscript": True,
+                        "summary": "La scene va jusqu'a une decision risquee et son effet.",
+                        "blockers": [],
+                        "recommendations": [],
+                    },
+                ],
+                "repair": repaired_text,
+                "memory": {
+                    "summary": "Le chapitre se clot enfin sur un acte couteux et son effet.",
+                    "characters": [{"name": "Ariane", "description": "Va au bout de sa decision."}],
+                    "locations": [{"name": "Port-Vieux", "description": "Le lieu absorbe l'onde de choc."}],
+                    "timeline_events": [{"event": "Ariane agit et en paie le prix tout de suite.", "order_hint": "nuit"}],
+                },
+            }
+        )
+        pipeline = GenerationPipeline(self.root, provider=provider)
+
+        with mock.patch.dict("os.environ", {"ANE_JUDGE_MODEL": "ollama:qwen2.5:7b"}, clear=False):
+            outcome = pipeline.generate_chapter("01", approval_callback=lambda _report, _path: True)
+
+        self.assertTrue(outcome.accepted)
+        self.assertEqual(outcome.draft_path.name, "repair_v1.md")
+        self.assertEqual(
+            [request.stage for request in provider.requests],
+            ["structure", "draft", "critique", "rewrite", "gate", "judge", "repair", "gate", "judge", "memory"],
+        )
+        first_gate_meta = json.loads(outcome.meta_path.read_text(encoding="utf-8"))
+        self.assertEqual(first_gate_meta["stage_attempts"]["gate"], 2)
+
+    def test_judge_failure_is_non_blocking(self):
+        provider = MockGenerationProvider(
+            {
+                "structure": "# Structure — chapitre_01\n\n## Objectif dramatique\nPoser une menace.\n",
+                "draft": "# Chapitre 01\n\nUn premier jet tendu.\n",
+                "critique": {
+                    "summary": "Le brouillon manque d'escalade au milieu.",
+                    "rewrite_required": True,
+                    "deviations": ["Le conflit tarde à apparaître."],
+                    "recommendations": ["Accentuer la menace dans la seconde scène."],
+                },
+                "rewrite": self._narrative_text(),
+                "gate": {
+                    "ready_for_manuscript": True,
+                    "summary": "Le chapitre est narratif et peut etre promu.",
+                    "blockers": [],
+                    "recommendations": [],
+                    "heuristic_blockers": [],
+                },
+                "judge": [
+                    "Pas de JSON du tout.",
+                    "Toujours pas de JSON exploitable.",
+                ],
+                "memory": {
+                    "summary": "Le chapitre installe une menace diffuse autour de l'héroïne.",
+                    "characters": [{"name": "Ariane", "description": "Héroïne troublée par un signe avant-coureur."}],
+                    "locations": [{"name": "Port-Vieux", "description": "Quartier bruissant où la tension s'installe."}],
+                    "timeline_events": [{"event": "Ariane perçoit le premier signe du basculement.", "order_hint": "soir"}],
+                },
+            }
+        )
+        pipeline = GenerationPipeline(self.root, provider=provider)
+
+        with mock.patch.dict("os.environ", {"ANE_JUDGE_MODEL": "ollama:qwen2.5:7b"}, clear=False):
+            outcome = pipeline.generate_chapter("01", approval_callback=lambda _report, _path: True)
+
+        self.assertTrue(outcome.accepted)
+        self.assertEqual(
+            [request.stage for request in provider.requests],
+            ["structure", "draft", "critique", "rewrite", "gate", "judge", "judge", "memory"],
+        )
+        gate_payload = json.loads(outcome.gate_path.read_text(encoding="utf-8"))
+        self.assertEqual(gate_payload["judge_blockers"], [])
+        self.assertIn("indisponible", gate_payload["judge_report"]["summary"])
+        self.assertIn("deux tentatives", gate_payload["judge_report"]["error"])
+
+    def test_rerunning_accepted_chapter_does_not_duplicate_timeline_events(self):
+        GenerationPipeline(self.root, provider=self._provider()).generate_chapter(
+            "01",
+            approval_callback=lambda _report, _path: True,
+        )
+        GenerationPipeline(self.root, provider=self._provider()).generate_chapter(
+            "01",
+            approval_callback=lambda _report, _path: True,
+        )
+
+        timeline_index = self.root / "memoire" / "index" / "chronologie.json"
+        timeline = json.loads(timeline_index.read_text(encoding="utf-8"))
+
+        self.assertEqual(len(timeline), 1)
+        self.assertEqual(timeline[0]["chapter"], "chapitre_01")
+        self.assertEqual(timeline[0]["event"], "Ariane perçoit le premier signe du basculement.")
 
     def test_generation_retries_invalid_json_for_critique_and_memory(self):
         provider = MockGenerationProvider(
@@ -740,6 +939,24 @@ class GenerationPipelineTests(unittest.TestCase):
         self.assertEqual(state["latest_drafts"], {"chapitre_02": "repair_v1.md", "chapitre_03": "repair_v2.md"})
         self.assertEqual(state["latest_repairs"], {"chapitre_02": "repair_v1.md", "chapitre_03": "repair_v2.md"})
 
+    def test_project_status_reports_corrupted_meta(self):
+        broken_dir = self.root / "brouillons" / "chapitres" / "chapitre_04"
+        broken_dir.mkdir(parents=True, exist_ok=True)
+        (broken_dir / "meta.json").write_text('{"status": "failed"', encoding="utf-8")
+
+        state = ProjectState(self.root).summary()
+
+        self.assertEqual(
+            state["corrupted_meta"],
+            [
+                {
+                    "chapter": "chapitre_04",
+                    "meta_path": str(broken_dir / "meta.json"),
+                    "error": "JSONDecodeError: Expecting ',' delimiter (line 1, column 20)",
+                }
+            ],
+        )
+
     def test_cli_write_alias_runs_pipeline(self):
         output = io.StringIO()
 
@@ -872,6 +1089,10 @@ class GenerationPipelineTests(unittest.TestCase):
             encoding="utf-8",
         )
 
+        broken_dir = self.root / "brouillons" / "chapitres" / "chapitre_04"
+        broken_dir.mkdir(parents=True, exist_ok=True)
+        (broken_dir / "meta.json").write_text('{"status": "failed"', encoding="utf-8")
+
         output = io.StringIO()
         with redirect_stdout(output):
             exit_code = main(["status"], root=self.root)
@@ -890,6 +1111,9 @@ class GenerationPipelineTests(unittest.TestCase):
         self.assertIn("En attente de validation:", rendered)
         self.assertIn("status=awaiting_acceptance", rendered)
         self.assertIn("chapitre_02", rendered)
+        self.assertIn("Métadonnées corrompues:", rendered)
+        self.assertIn("chapitre_04", rendered)
+        self.assertIn("JSONDecodeError", rendered)
 
 
 class ProviderConfigTests(unittest.TestCase):
@@ -1050,7 +1274,18 @@ class ProviderConfigTests(unittest.TestCase):
                     }
                 ).encode("utf-8")
 
-        with mock.patch("core.generation.provider.request.urlopen", return_value=FakeResponse()) as urlopen_mock:
+        with mock.patch("core.runtime.client.request.urlopen", return_value=FakeResponse()) as urlopen_mock:
+            provider = OpenAICompatibleProvider(
+                ProviderConfig(
+                    provider="openai_compatible",
+                    base_url="http://127.0.0.1:8100",
+                    api_key="",
+                    model="apple-coreml:qwen3.5-4b-onnx-q4f16",
+                    timeout=30.0,
+                    max_tokens=321,
+                    stage_max_tokens={"critique": 654},
+                )
+            )
             provider.generate(GenerationRequest(stage="critique", prompt="hello"))
 
         http_request = urlopen_mock.call_args.args[0]
@@ -1058,18 +1293,6 @@ class ProviderConfigTests(unittest.TestCase):
         self.assertEqual(payload["max_tokens"], 654)
 
     def test_explicit_request_budget_overrides_stage_budget(self):
-        provider = OpenAICompatibleProvider(
-            ProviderConfig(
-                provider="openai_compatible",
-                base_url="http://127.0.0.1:8100",
-                api_key="",
-                model="apple-coreml:qwen3.5-4b-onnx-q4f16",
-                timeout=30.0,
-                max_tokens=321,
-                stage_max_tokens={"critique": 654},
-            )
-        )
-
         class FakeResponse:
             def __enter__(self):
                 return self
@@ -1087,7 +1310,18 @@ class ProviderConfigTests(unittest.TestCase):
                     }
                 ).encode("utf-8")
 
-        with mock.patch("core.generation.provider.request.urlopen", return_value=FakeResponse()) as urlopen_mock:
+        with mock.patch("core.runtime.client.request.urlopen", return_value=FakeResponse()) as urlopen_mock:
+            provider = OpenAICompatibleProvider(
+                ProviderConfig(
+                    provider="openai_compatible",
+                    base_url="http://127.0.0.1:8100",
+                    api_key="",
+                    model="apple-coreml:qwen3.5-4b-onnx-q4f16",
+                    timeout=30.0,
+                    max_tokens=321,
+                    stage_max_tokens={"critique": 654},
+                )
+            )
             provider.generate(
                 GenerationRequest(
                     stage="critique",
@@ -1101,24 +1335,54 @@ class ProviderConfigTests(unittest.TestCase):
         self.assertEqual(payload["max_tokens"], 111)
 
     def test_openai_provider_wraps_timeout_error(self):
-        provider = OpenAICompatibleProvider(
-            ProviderConfig(
-                provider="openai_compatible",
-                base_url="http://127.0.0.1:8100",
-                api_key="",
-                model="ollama:qwen2.5:1.5b",
-                timeout=12.0,
-                max_tokens=321,
-                stage_max_tokens={},
+        with mock.patch("core.runtime.client.request.urlopen", side_effect=TimeoutError("timed out")):
+            provider = OpenAICompatibleProvider(
+                ProviderConfig(
+                    provider="openai_compatible",
+                    base_url="http://127.0.0.1:8100",
+                    api_key="",
+                    model="ollama:qwen2.5:1.5b",
+                    timeout=12.0,
+                    max_tokens=321,
+                    stage_max_tokens={},
+                )
             )
-        )
-
-        with mock.patch("core.generation.provider.request.urlopen", side_effect=TimeoutError("timed out")):
             with self.assertRaises(ProviderError) as context:
                 provider.generate(GenerationRequest(stage="structure", prompt="hello"))
 
         self.assertIn("Timeout du provider", str(context.exception))
         self.assertIn("structure", str(context.exception))
+
+    def test_runtime_health_probe_reads_health_payload(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "status": "ok",
+                        "model": "apple-coreml:qwen3.5-4b-onnx-q4f16",
+                    }
+                ).encode("utf-8")
+
+        profile = RuntimeProfile(
+            provider="openai_compatible",
+            base_url="http://127.0.0.1:8100",
+            api_key="",
+            model="apple-coreml:qwen3.5-4b-onnx-q4f16",
+            timeout=12.0,
+            max_tokens=321,
+            stage_max_tokens={},
+        )
+        health = probe_runtime_health(profile, opener=lambda *_args, **_kwargs: FakeResponse())
+
+        self.assertTrue(health.ok)
+        self.assertEqual(health.status, "ok")
+        self.assertEqual(health.active_model, "apple-coreml:qwen3.5-4b-onnx-q4f16")
 
 
 class JsonRepairTests(unittest.TestCase):
@@ -1153,6 +1417,432 @@ class JsonRepairTests(unittest.TestCase):
         self.assertEqual(memory.chapter_summary, "Résumé")
         self.assertEqual(memory.characters[0]["name"], "Ariane")
         self.assertEqual(memory.timeline_events[0]["event"], "Décision")
+
+    def test_narrative_judge_report_recovers_json(self):
+        report = NarrativeJudgeReport.from_response_text(
+            'Diagnostic a ignorer {"ready_for_manuscript": false,'
+            '"summary":"La scene reste trop prudente.",'
+            '"blockers":["missing_risky_decision"],'
+            '"recommendations":["forcer une decision couteuse"]}'
+        )
+
+        self.assertFalse(report.ready_for_manuscript)
+        self.assertEqual(report.blockers, ["missing_risky_decision"])
+        self.assertEqual(report.recommendations, ["forcer une decision couteuse"])
+
+    def test_narrative_judge_report_normalizes_aliases_and_preserves_unknown_blockers(self):
+        report = NarrativeJudgeReport.from_response_text(
+            '{"ready_for_manuscript": true,'
+            '"summary":"Diagnostic.",'
+            '"blockers":["incomplete", "lacks_narrative_continuity", "unknown_label", "incomplete"],'
+            '"recommendations":["forcer la fermeture", "forcer la fermeture"]}'
+        )
+
+        self.assertFalse(report.ready_for_manuscript)
+        self.assertEqual(report.blockers, ["incomplete_scene", "weak_narrative_continuity", "unknown_label"])
+        self.assertEqual(report.recommendations, ["forcer la fermeture"])
+
+    def test_gate_report_normalizes_aliases_and_recomputes_ready(self):
+        report = ManuscriptGateReport.from_response_text(
+            '{"ready_for_manuscript": true,'
+            '"summary":"Diagnostic.",'
+            '"blockers":["incomplete", "outline_like", "unknown_label"],'
+            '"heuristic_blockers":["lacks_narrative_continuity"],'
+            '"judge_blockers":["missing_immediate_consequence", "unknown_label"],'
+            '"recommendations":["terminer la scene", "terminer la scene"]}'
+        )
+
+        self.assertFalse(report.ready_for_manuscript)
+        self.assertEqual(report.blockers, ["incomplete_scene", "outline_like", "unknown_label"])
+        self.assertEqual(report.heuristic_blockers, ["weak_narrative_continuity"])
+        self.assertEqual(report.judge_blockers, ["missing_immediate_consequence", "unknown_label"])
+        self.assertEqual(report.recommendations, ["terminer la scene"])
+
+    def test_close_json_delimiters_mismatched_closer_repaired(self):
+        from core.generation.models import _close_json_delimiters
+        # Array closed with } instead of ] — should produce valid JSON
+        result = _close_json_delimiters('{"key": [1, 2}')
+        import json as _json
+        data = _json.loads(result)
+        self.assertEqual(data["key"], [1, 2])
+
+    def test_close_json_delimiters_stray_closer_dropped(self):
+        from core.generation.models import _close_json_delimiters
+        # Closer with no matching opener at top level — dropped
+        result = _close_json_delimiters(']{"key": "val"}')
+        import json as _json
+        data = _json.loads(result)
+        self.assertEqual(data["key"], "val")
+
+    def test_close_json_delimiters_truncated_string_in_array(self):
+        from core.generation.models import _close_json_delimiters
+        # Array truncated mid-string
+        result = _close_json_delimiters('{"items": ["first", "truncated')
+        import json as _json
+        data = _json.loads(result)
+        self.assertEqual(data["items"][0], "first")
+        self.assertIn("truncated", data["items"][1])
+
+
+class NormalizeProseTests(unittest.TestCase):
+    """Tests for _normalize_generated_prose: heading stripping and outline cleanup."""
+
+    def _pipeline(self):
+        import tempfile
+        td = tempfile.mkdtemp()
+        return GenerationPipeline(Path(td))
+
+    def test_strips_all_markdown_headings(self):
+        p = self._pipeline()
+        raw = "### Scène 1 — La femme arrive\nElle avança.\n## Objectif dramatique\nReste neutre.\n"
+        result = p._normalize_generated_prose(raw)
+        self.assertNotIn("###", result)
+        self.assertNotIn("## Objectif", result)
+        self.assertIn("Elle avança.", result)
+        self.assertIn("Reste neutre.", result)
+
+    def test_strips_h1_chapter_heading(self):
+        p = self._pipeline()
+        raw = "# Chapitre 01\n\nAriane longe le quai.\n"
+        result = p._normalize_generated_prose(raw)
+        self.assertNotIn("# Chapitre", result)
+        self.assertIn("Ariane longe le quai.", result)
+
+    def test_prose_containing_word_scene_not_flagged(self):
+        p = self._pipeline()
+        prose = ("Elle entra dans la scène avec une retenue calculee. " * 20).strip() + ".\n"
+        result = p._is_outline_like(prose)
+        self.assertFalse(result, "Le mot 'scène' dans la prose courante ne doit pas déclencher outline_like")
+
+    def test_scene_heading_label_is_flagged(self):
+        p = self._pipeline()
+        text = "### Scène 1 — La femme arrive\nElle avança.\n### Scène 2 — La fuite\nElle courut.\n"
+        self.assertTrue(p._is_outline_like(text))
+
+    def test_scene_number_label_is_flagged(self):
+        p = self._pipeline()
+        text = "Scène 1:\nElle avança.\nScène 2:\nElle courut.\n"
+        self.assertTrue(p._is_outline_like(text))
+
+    def test_dense_bullet_list_flagged_as_outline_like(self):
+        p = self._pipeline()
+        text = "- Elle s'arrêta net.\n- La bruine tombait.\n- Une porte s'ouvrit.\n- Elle avança quand même.\n"
+        self.assertTrue(p._is_outline_like(text), "4+ bullet lines alone doivent déclencher outline_like")
+
+    def test_few_bullets_in_prose_not_flagged(self):
+        p = self._pipeline()
+        prose = "Ariane longe le quai vide et ecoute les pas. Elle serre un billet humide.\n"
+        prose += "- Un indice ici.\n"
+        prose += "Elle decida de repartir sans se retourner.\n"
+        self.assertFalse(p._is_outline_like(prose), "1-3 bullet lines dans de la prose ne doit pas déclencher outline_like")
+
+    def test_repair_focus_mentions_judge_blockers(self):
+        p = self._pipeline()
+        gate_report = ManuscriptGateReport.from_heuristics(
+            blockers=["too_short"],
+            recommendations=["allonger la scene"],
+            summary="Heuristique.",
+        ).with_judge_report(
+            NarrativeJudgeReport(
+                ready_for_manuscript=False,
+                summary="La decision risquee manque encore.",
+                blockers=["missing_risky_decision", "missing_immediate_consequence"],
+                recommendations=["aller jusqu'a l'acte final"],
+            )
+        )
+
+        focus = p._repair_focus(gate_report)
+        self.assertIn("decision risquee concrete", focus)
+        self.assertIn("consequence immediate, observable", focus)
+        self.assertIn("couter quelque chose d'observable", focus)
+        self.assertIn("meme lieu et la meme minute", focus)
+        self.assertIn("ne pas finir sur un depart vers la suite", focus)
+
+    def test_sanitize_gate_report_drops_outline_like_without_visual_markers(self):
+        p = self._pipeline()
+        prose = (
+            "La femme marchait vite dans la rue humide. Elle tenait un livre noir contre elle.\n\n"
+            "Elle prit une decision risquee et entra dans la ruelle, le souffle court.\n"
+        )
+        gate_report = ManuscriptGateReport(
+            ready_for_manuscript=False,
+            summary="Le texte contient encore des marqueurs visuels de plan.",
+            blockers=["outline_like"],
+            recommendations=["Retirer les titres et les puces."],
+            heuristic_blockers=[],
+            judge_blockers=[],
+            judge_report=None,
+            raw={},
+        )
+
+        sanitized = p._sanitize_gate_report(prose, gate_report)
+
+        self.assertEqual(sanitized.blockers, [])
+        self.assertTrue(sanitized.ready_for_manuscript)
+        self.assertIn("aucun marqueur visuel de plan", sanitized.summary)
+
+
+class IntentionGateTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def _gate(self):
+        from core.intention.gate import IntentionGate
+        return IntentionGate(self.root)
+
+    def _make_intention(self, slug: str, content: str = "Intention test.\n") -> None:
+        d = self.root / "notes" / "intentions"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{slug}.md").write_text(content, encoding="utf-8")
+
+    def test_has_intention_returns_false_when_dir_missing(self):
+        gate = self._gate()
+        self.assertFalse(gate.has_intention())
+        self.assertFalse(gate.has_intention("1"))
+
+    def test_has_intention_returns_false_when_no_matching_file(self):
+        d = self.root / "notes" / "intentions"
+        d.mkdir(parents=True, exist_ok=True)
+        gate = self._gate()
+        self.assertFalse(gate.has_intention("1"))
+        self.assertFalse(gate.has_intention())
+
+    def test_has_intention_returns_true_for_matching_chapter(self):
+        self._make_intention("chapitre_01")
+        gate = self._gate()
+        self.assertTrue(gate.has_intention("1"))
+        self.assertTrue(gate.has_intention("01"))
+
+    def test_has_intention_any_returns_true_when_any_intention_exists(self):
+        self._make_intention("chapitre_03")
+        gate = self._gate()
+        self.assertTrue(gate.has_intention())
+
+    def test_resolve_intention_path_returns_none_when_missing(self):
+        d = self.root / "notes" / "intentions"
+        d.mkdir(parents=True, exist_ok=True)
+        gate = self._gate()
+        self.assertIsNone(gate.resolve_intention_path("2"))
+
+    def test_resolve_intention_path_returns_path_when_exists(self):
+        self._make_intention("chapitre_02")
+        gate = self._gate()
+        path = gate.resolve_intention_path("2")
+        self.assertIsNotNone(path)
+        self.assertEqual(path.name, "chapitre_02.md")
+
+    def test_resolve_intention_path_raises_on_conflict(self):
+        from core.chapters import ChapterConflictError
+        d = self.root / "notes" / "intentions"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "chapitre_01.md").write_text("A\n", encoding="utf-8")
+        (d / "chapitre_1.md").write_text("B\n", encoding="utf-8")
+        gate = self._gate()
+        with self.assertRaises(ChapterConflictError):
+            gate.resolve_intention_path("1")
+
+    def test_load_intention_returns_stripped_content(self):
+        self._make_intention("chapitre_01", "  Tension sourde.  \n\n")
+        gate = self._gate()
+        text = gate.load_intention("1")
+        self.assertEqual(text, "Tension sourde.")
+
+    def test_load_intention_raises_when_missing(self):
+        d = self.root / "notes" / "intentions"
+        d.mkdir(parents=True, exist_ok=True)
+        gate = self._gate()
+        with self.assertRaises(RuntimeError):
+            gate.load_intention("99")
+
+    def test_assert_intention_raises_when_no_file_for_chapter(self):
+        gate = self._gate()
+        with self.assertRaises(RuntimeError) as ctx:
+            gate.assert_intention("5")
+        self.assertIn("bloquée", str(ctx.exception))
+
+    def test_assert_intention_raises_when_no_intention_at_all(self):
+        gate = self._gate()
+        with self.assertRaises(RuntimeError) as ctx:
+            gate.assert_intention()
+        self.assertIn("bloquée", str(ctx.exception))
+
+    def test_assert_intention_passes_when_intention_exists(self):
+        self._make_intention("chapitre_01")
+        gate = self._gate()
+        gate.assert_intention("1")  # should not raise
+
+
+class PromptStoreTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def _store(self):
+        from core.prompts import PromptStore
+        return PromptStore(self.root)
+
+    def _write_prompt(self, name: str, content: str) -> None:
+        d = self.root / "prompts"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{name}_v1.txt").write_text(content, encoding="utf-8")
+
+    def test_render_substitutes_simple_variable(self):
+        self._write_prompt("hello", "Bonjour $hero.")
+        store = self._store()
+        result = store.render("hello", hero="Monde")
+        self.assertEqual(result, "Bonjour Monde.")
+
+    def test_render_normalizes_dict_to_json(self):
+        self._write_prompt("meta", "Données: $payload")
+        store = self._store()
+        result = store.render("meta", payload={"key": "val"})
+        self.assertIn('"key"', result)
+        self.assertIn('"val"', result)
+
+    def test_render_normalizes_none_to_empty_string(self):
+        self._write_prompt("nullable", "Contexte: $ctx.")
+        store = self._store()
+        result = store.render("nullable", ctx=None)
+        self.assertEqual(result, "Contexte: .")
+
+    def test_render_falls_back_to_builtin_prompt(self):
+        store = self._store()
+        result = store.render("draft", chapter_slug="chapitre_01",
+                              intention="test", structure_markdown="# s",
+                              story_context="ctx")
+        self.assertIn("chapitre_01", result)
+
+    def test_render_raises_when_prompt_not_found(self):
+        from core.prompts import PromptNotFoundError
+        store = self._store()
+        with self.assertRaises(PromptNotFoundError):
+            store.render("nonexistent_prompt_xyz", x="y")
+
+    def test_project_prompt_overrides_builtin(self):
+        self._write_prompt("draft", "OVERRIDE: $chapter_slug")
+        store = self._store()
+        result = store.render("draft", chapter_slug="chapitre_02",
+                              intention="i", structure_markdown="s",
+                              story_context="c")
+        self.assertTrue(result.startswith("OVERRIDE:"))
+        self.assertIn("chapitre_02", result)
+
+    def test_render_normalizes_list_to_json(self):
+        self._write_prompt("list_tpl", "Items: $items")
+        store = self._store()
+        result = store.render("list_tpl", items=["a", "b"])
+        self.assertIn('"a"', result)
+        self.assertIn('"b"', result)
+
+
+class CLIIntentionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_cli_intention_create_writes_file(self):
+        from cli.main import cmd_intention_create
+        inputs = iter(["Une tension sourde.", EOFError()])
+
+        def fake_input(prompt=""):
+            val = next(inputs)
+            if isinstance(val, BaseException):
+                raise val
+            return val
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            exit_code = cmd_intention_create(self.root, chapter_value="1", input_func=fake_input)
+        self.assertEqual(exit_code, 0)
+        intention_path = self.root / "notes" / "intentions" / "chapitre_01.md"
+        self.assertTrue(intention_path.exists())
+        content = intention_path.read_text(encoding="utf-8")
+        self.assertIn("Une tension sourde.", content)
+
+    def test_cli_status_shows_no_chapter_for_empty_project(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            exit_code = main(["status"], root=self.root)
+        self.assertEqual(exit_code, 0)
+        self.assertIn("aucun", output.getvalue())
+
+    def test_cli_generate_without_intention_exits_nonzero(self):
+        with mock.patch("cli.main.GenerationPipeline") as pipeline_cls:
+            pipeline_cls.return_value.generate_chapter.side_effect = RuntimeError(
+                "Aucune intention trouvée pour chapitre_01."
+            )
+            exit_code = main(["generate", "chapter", "--chapter", "1"], root=self.root)
+        self.assertNotEqual(exit_code, 0)
+
+    def test_cli_intention_create_rejects_invalid_chapter_format(self):
+        from cli.main import cmd_intention_create
+        output = io.StringIO()
+        with redirect_stdout(output):
+            exit_code = cmd_intention_create(self.root, chapter_value="@@@")
+        self.assertEqual(exit_code, 1)
+        self.assertIn("invalide", output.getvalue())
+
+    def test_cli_intention_create_rejects_duplicate_intention(self):
+        from cli.main import cmd_intention_create
+        # Create once
+        inputs = iter(["Tension initiale.", EOFError()])
+        def fake_input(prompt=""):
+            val = next(inputs)
+            if isinstance(val, BaseException):
+                raise val
+            return val
+        cmd_intention_create(self.root, chapter_value="3", input_func=fake_input)
+        # Try to create again — should fail
+        output = io.StringIO()
+        with redirect_stdout(output):
+            exit_code = cmd_intention_create(self.root, chapter_value="3")
+        self.assertEqual(exit_code, 1)
+        self.assertIn("déjà", output.getvalue())
+
+    def test_cli_intention_create_rejects_empty_content(self):
+        from cli.main import cmd_intention_create
+        inputs = iter([EOFError()])
+        def fake_input(prompt=""):
+            raise next(inputs)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            exit_code = cmd_intention_create(self.root, chapter_value="4", input_func=fake_input)
+        self.assertEqual(exit_code, 1)
+        self.assertIn("vide", output.getvalue())
+
+    def test_cli_no_args_calls_status(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            exit_code = main([], root=self.root)
+        self.assertEqual(exit_code, 0)
+        self.assertIn("AI Novel Engine", output.getvalue())
+
+    def test_cli_provider_error_exits_nonzero(self):
+        with mock.patch("cli.main.GenerationPipeline") as pipeline_cls:
+            pipeline_cls.return_value.generate_chapter.side_effect = ProviderError("timeout")
+            output = io.StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["generate", "chapter", "--chapter", "1"], root=self.root)
+        self.assertEqual(exit_code, 1)
+        self.assertIn("Erreur", output.getvalue())
+
+    def test_cli_write_alias_provider_error_exits_nonzero(self):
+        with mock.patch("cli.main.GenerationPipeline") as pipeline_cls:
+            pipeline_cls.return_value.generate_chapter.side_effect = ProviderError("timeout")
+            output = io.StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["write", "--chapter", "1"], root=self.root)
+        self.assertEqual(exit_code, 1)
 
 
 if __name__ == "__main__":

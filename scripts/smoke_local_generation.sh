@@ -37,9 +37,9 @@ Environment:
   ANE_MAX_TOKENS_STRUCTURE Default: 96 for apple-coreml, 224 otherwise
   ANE_MAX_TOKENS_DRAFT     Default: 192 for apple-coreml, 384 otherwise
   ANE_MAX_TOKENS_CRITIQUE  Default: 160 for apple-coreml, 512 otherwise
-  ANE_MAX_TOKENS_REWRITE   Default: 192 for apple-coreml, 448 otherwise
+  ANE_MAX_TOKENS_REWRITE   Default: 192 for apple-coreml, 1024 otherwise
   ANE_MAX_TOKENS_GATE      Default: 128 for apple-coreml, 384 otherwise
-  ANE_MAX_TOKENS_REPAIR    Default: 160 for apple-coreml, 512 otherwise
+  ANE_MAX_TOKENS_REPAIR    Default: 160 for apple-coreml, 1536 otherwise
   ANE_MAX_TOKENS_MEMORY    Default: 128 for apple-coreml, 320 otherwise
 EOF
 }
@@ -123,9 +123,9 @@ else
   export ANE_MAX_TOKENS_STRUCTURE="${ANE_MAX_TOKENS_STRUCTURE:-224}"
   export ANE_MAX_TOKENS_DRAFT="${ANE_MAX_TOKENS_DRAFT:-384}"
   export ANE_MAX_TOKENS_CRITIQUE="${ANE_MAX_TOKENS_CRITIQUE:-512}"
-  export ANE_MAX_TOKENS_REWRITE="${ANE_MAX_TOKENS_REWRITE:-448}"
+  export ANE_MAX_TOKENS_REWRITE="${ANE_MAX_TOKENS_REWRITE:-1024}"
   export ANE_MAX_TOKENS_GATE="${ANE_MAX_TOKENS_GATE:-384}"
-  export ANE_MAX_TOKENS_REPAIR="${ANE_MAX_TOKENS_REPAIR:-512}"
+  export ANE_MAX_TOKENS_REPAIR="${ANE_MAX_TOKENS_REPAIR:-1536}"
   export ANE_MAX_TOKENS_MEMORY="${ANE_MAX_TOKENS_MEMORY:-320}"
 fi
 
