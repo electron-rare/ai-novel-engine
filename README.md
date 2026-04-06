@@ -1,148 +1,163 @@
 # AI Novel Engine
 
-AI Novel Engine est un moteur de rédaction de romans assisté par IA.
+Le cockpit d'ecriture pour romans assistes par IA.
 
-Il ne génère pas de romans.
-Il fournit une méthode, une architecture et des outils
-pour permettre aux écrivains de tenir des projets narratifs longs
-sans perte de cohérence, de mémoire ou de contrôle.
+AI Novel Engine rassemble une application macOS de pilotage editorial et un moteur narratif structure pour aider un auteur a tenir un projet long sans perdre la main. Le projet n'est pas un chatbot qui "pond un roman". C'est un environnement de travail pour cadrer un livre, faire circuler le bon contexte, comparer les versions, lancer des assistants specialises, puis ne promouvoir que ce qui merite vraiment d'entrer dans le manuscrit.
 
-## Principes clés
-- l’auteur reste décisionnaire
-- aucune génération sans intention
-- l’IA est découpée en rôles
-- la mémoire est externe
-- la simplicité est une contrainte
+## Ce que le produit apporte
 
-## Statut
-v2 — développement en cours (open-source)
+- une application Studio pour piloter projet, scenes, personnages, arcs et dependances
+- une assistance a l'ecriture a plusieurs niveaux: inline, copilote, agents, pipeline complet
+- une logique local-first avec artefacts lisibles, historiques et diffables
+- un garde-fou narratif avant toute promotion dans le manuscrit
+- une separation claire entre assistance, generation, validation et memoire projet
 
-## Suivi
-- backlog actif: [`TODO_ACTIVE.md`](./TODO_ACTIVE.md)
-- etat livre: [`TODO_IMPLEMENTE.md`](./TODO_IMPLEMENTE.md)
-- contexte courant: [`docs/CONTEXTE_PROJET_2026-03-14.md`](./docs/CONTEXTE_PROJET_2026-03-14.md)
-- memoire de reprise: [`docs/MEMOIRE_REPRISE_2026-03-14.md`](./docs/MEMOIRE_REPRISE_2026-03-14.md)
-- ordre d'execution recommande: [`docs/EXECUTION_PLAN_2026-03-14.md`](./docs/EXECUTION_PLAN_2026-03-14.md)
-- runbook local: [`docs/runbooks/LOCAL_GENERATION.md`](./docs/runbooks/LOCAL_GENERATION.md)
-- comparatif modeles local: [`docs/MODEL_COMPARISON_2026-03-08.md`](./docs/MODEL_COMPARISON_2026-03-08.md)
+## Une assistance a l'ecriture vraiment pilotee
 
-## Automation des lots utiles
+AI Novel Engine aide a ecrire de quatre manieres complementaires:
 
-Le driver principal des prochains lots utiles est maintenant:
+- assistance inline sur les champs editoriaux majeurs: titre, genre, logline, synopsis, note auteur, fiches personnages, objectifs de scene et brouillons
+- `Copilot / Writing Tools` pour converser, resumer, relire, proposer un rewrite et comparer brouillon, reponse assistant et dernier manuscrit pipeline
+- `Wizard Agents` pour choisir un agent Mascarade, preparer un brief, verifier le routage et reappliquer la sortie avec tracabilite
+- pipeline ANE complet pour passer d'une intention a un chapitre relu, gate et eventuellement promu
+
+L'idee centrale: chaque niveau d'assistance a son role. On n'utilise pas le meme outil pour trouver un titre, debloquer une scene, challenger une incoherence ou fabriquer un chapitre entier sous contrainte.
+
+## Ce que l'application permet aujourd'hui
+
+### Piloter le roman
+
+- organiser des projets locaux avec bibliotheque, sauvegarde et reprise
+- travailler scene par scene avec objectifs, beat, mood, cible de mots et brouillon
+- suivre personnages, arcs et dependances entre scenes
+- garder visibles les signaux pipeline, les blockers et les artefacts utiles
+
+### Ecrire avec contexte
+
+- injecter le contexte editorial utile dans les aides inline
+- lancer un copilote avec historique local par projet
+- utiliser un RAG local-first qui recoupe scene, brouillons, gate pipeline, manuscrit et sorties agent
+- comparer avant application plutot que remplacer a l'aveugle
+
+### Orchestrer l'IA au bon niveau
+
+- prioriser Apple Intelligence quand elle est disponible
+- basculer sur OpenAI, Mascarade ou un runtime local compatible OpenAI
+- gerer les presets runtime et les modeles locaux MLX depuis l'app
+- lancer des agents Mascarade et rejouer leurs sorties dans le flux d'ecriture
+
+### Garder le controle
+
+- confirmations avant les ecritures destructives
+- lecture du gate, des blockers et des recommandations pipeline
+- promotion vers le manuscrit seulement quand le chapitre passe les garde-fous et la validation auteur
+- persistance locale des projets et artefacts lisibles sur disque
+
+## Le coeur du projet
+
+Le repo combine deux couches qui travaillent ensemble:
+
+- `app_AI-novel-engine/`: le Studio macOS SwiftUI, centre de pilotage de l'assistance a l'ecriture
+- le repo racine Python: le moteur narratif ANE, la CLI, les prompts, l'orchestration runtime, le reporting et les runbooks
+
+Le workflow narratif reste volontairement explicite:
+
+`intention -> structure -> draft -> critique -> rewrite -> gate -> validation auteur -> memoire`
+
+## Pourquoi c'est different
+
+- l'auteur reste decisionnaire
+- aucune generation sans intention
+- l'IA est decoupee en roles au lieu d'etre une seule boite noire
+- la memoire projet reste externe et inspectable
+- l'application aide a piloter l'ecriture, pas a effacer le travail editorial
+
+Manifeste operationnel:
+- principes: [`docs/principes.md`](./docs/principes.md)
+- gouvernance: [`docs/governance.md`](./docs/governance.md)
+
+## Demarrage rapide
+
+### Lancer le moteur et verifier le repo
 
 ```bash
-python3 scripts/run_next_lots.py --lot full
+python3 -m unittest discover -s tests -v
+python3 -m cli.main status
+make healthcheck
+python3 scripts/reports_ops.py summary
 ```
 
-Points clés:
-- le manifeste versionné est `automation/next_lots.toml`
-- `paths.ollama_runtime = "native"` garde le preflight Ollama natif avant smoke
-- `paths.ollama_runtime = "openai_compatible"` saute ce preflight et envoie `ollama:*` vers `paths.ollama_openai_base_url`
-- le driver réutilise les smokes existants au lieu de dupliquer le pipeline
-- `tracking_sync` consolide maintenant les derniers verdicts connus par modele a partir de `automation/reports/*/run.json`
-- les opérations sensibles restent semi-autos: en cas de switch Apple ou de restart runtime, le cycle prépare les commandes exactes puis s'arrête avec un état de reprise
-- reprise:
+### Lancer l'application macOS
 
 ```bash
-python3 scripts/run_next_lots.py --resume automation/state/next_lots_state.json
+cd app_AI-novel-engine
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift run
 ```
 
-- synchronisation seule des plans/TODOs/readmes à partir du dernier état:
+Pour lancer un vrai bundle `.app`:
 
 ```bash
-python3 scripts/run_next_lots.py --lot tracking_sync --report-only
+cd app_AI-novel-engine
+./scripts/studio_ops.sh run-app
 ```
 
-## Generation locale via Mascarade
-
-`ai-novel-engine` parle un provider OpenAI-compatible. Pour utiliser la
-generation locale via `mascarade`, pointer simplement le moteur narratif vers le
-core Python sur `:8100`.
-
-```bash
-export ANE_PROVIDER=openai_compatible
-export ANE_BASE_URL=http://127.0.0.1:8100
-export ANE_MODEL=<provider:model>
-export ANE_MAX_TOKENS=512
-export ANE_MAX_TOKENS_STRUCTURE=256
-export ANE_MAX_TOKENS_DRAFT=512
-export ANE_MAX_TOKENS_CRITIQUE=384
-export ANE_MAX_TOKENS_REWRITE=512
-export ANE_MAX_TOKENS_GATE=320
-export ANE_MAX_TOKENS_REPAIR=384
-export ANE_MAX_TOKENS_MEMORY=256
-export ANE_REPAIR_MAX_PASSES=2
-# optionnel si tu veux forcer un fallback explicite pour la reparation
-# export ANE_REPAIR_FALLBACK_MODEL=ollama:qwen2.5:7b
-
-# seulement si MASCARADE_API_KEY est active
-export ANE_API_KEY=ton-token-mascarade
-
-python3 -m cli.main generate chapter --chapter 01
-```
-
-Notes :
-- `ANE_MODEL` est requis; le repo n'impose pas de modele par défaut
-- `ANE_MODEL` selectionne le backend local par prefixe `apple-coreml:` ou `ollama:`
-- `ANE_MAX_TOKENS` reste le plafond global par défaut
-- les overrides `ANE_MAX_TOKENS_STRUCTURE`, `..._DRAFT`, `..._CRITIQUE`, `..._REWRITE`, `..._GATE`, `..._REPAIR`, `..._MEMORY` permettent d'ajuster chaque étape
-- `ANE_REPAIR_MAX_PASSES` borne la boucle `repair`
-- `ANE_REPAIR_FALLBACK_MODEL` permet de forcer le modele du second passage `repair`
-- le pipeline narratif reste entierement dans `ai-novel-engine`
-- `mascarade` sert uniquement de runtime local et de couche OpenAI-compatible
-- au 13 mars 2026 au soir, `:8100` et `:8201` sont remontes, et `http://127.0.0.1:11434/api/tags` repond de nouveau
-- le vrai blocage restant n'est plus un service eteint mais `ollama` natif 0.17.7, qui echoue encore en generation sur `qwen2.5:7b` et `qwen2.5:1.5b` avec une erreur Metal
-- le rerun Apple comparable `automation/reports/apple_rerun_7oY51o` reste utile comme incident historique: il a ete bloque a `gate` sur `too_short` + `truncated_ending`, puis a casse sur l'ancien fallback `repair` vers Ollama
-- le rerun comparable `automation/reports/apple_rerun_preset_20260313T223555Z` est `accepted` le 13 mars 2026 avec `323` mots et `repair_attempts=0`; la reference Apple locale est donc reconfirmee
-- dernier cycle complet termine au 9 mars 2026 :
-  - `apple-coreml:qwen3.5-4b-onnx-q4f16` est `accepted` de bout en bout sous garde-fou
-  - `ollama:qwen2.5:7b` atteint `gate`, exerce `repair` en live, puis finit `quality_blocked` sur `outline_like`
-- `apple-coreml:stateful-mistral7b-instruct-int4-coreml` est sorti du chemin critique; il reste archive comme piste experimentale
-- les baselines `apple-coreml:qwen2.5-0.5b-instruct-onnx` et `ollama:qwen2.5:1.5b` ont ete rejouees et finissent actuellement `quality_blocked` sur `truncated_ending`
-- le smoke et `status` exposent maintenant `gate_v1.json`, `quality_blockers`, `failed_stage`, `repair_attempts` et `repair_models`
-- le runtime Apple local ne sert qu'un `model_id` a la fois; un fallback `repair` vers un autre modele Apple exige donc un switch de service entre runs
-- par defaut, le second passage `repair` reste maintenant sur le meme provider; `ANE_REPAIR_FALLBACK_MODEL` sert seulement a forcer un switch explicite
-
-Smoke test local rapide :
+### Lancer un smoke narratif local
 
 ```bash
 ./scripts/smoke_local_generation.sh \
   --base-url http://127.0.0.1:8100 \
-  --model "ollama:qwen2.5:1.5b" \
+  --model "<provider:model>" \
   --approve
 ```
 
-Le script cree un workspace temporaire, ecrit une intention de test, lance la vraie CLI publique, fait un warm-up automatique pour `apple-coreml`, puis affiche un resume humain des artefacts et du `meta.json`. En mode `apple-coreml`, il applique par defaut un timeout plus large (`ANE_TIMEOUT=900`) et des budgets de smoke plus courts pour eviter de faire exploser la latence locale. Pour les reruns qualitatifs de reference, fixer explicitement `--timeout 300` et des budgets `ANE_MAX_TOKENS_*` communs. Utiliser `--workspace`, `--chapter`, `--intention`, `--timeout`, `--approve` ou `--reject` si besoin.
+## Surfaces principales du repo
+
+- `cli/`: CLI publique du moteur narratif
+- `core/`: pipeline, runtime, reporting, automation et logique projet
+- `scripts/`: smokes, TUIs, supervision et helpers ops
+- `tests/`: suite Python unitaire
+- `prompts/`: prompts versionnes
+- `docs/`: runbooks, specs, snapshots, audit et index
+- `app_AI-novel-engine/`: Studio macOS SwiftUI
+
+## Reperes utiles
+
+- index documentaire vivant: [`docs/dev/README.md`](./docs/dev/README.md)
+- audit courant: [`docs/CODE_AUDIT_2026-04-06.md`](./docs/CODE_AUDIT_2026-04-06.md)
+- backlog actif: [`TODO_ACTIVE.md`](./TODO_ACTIVE.md)
+- etat livre: [`TODO_IMPLEMENTE.md`](./TODO_IMPLEMENTE.md)
+- runbook generation locale: [`docs/runbooks/LOCAL_GENERATION.md`](./docs/runbooks/LOCAL_GENERATION.md)
+- runbook automation: [`docs/runbooks/AUTOMATION.md`](./docs/runbooks/AUTOMATION.md)
+- workflow narratif: [`docs/workflow.md`](./docs/workflow.md)
+- manifeste d'exploitation: [`automation/next_lots.toml`](./automation/next_lots.toml)
+
+## Notes d'exploitation
+
+- le chemin par defaut du manifeste courant passe par `:8100`
+- `:8091` est un chemin alternatif explicite pour `llama.cpp`, pas la voie normale tant que le manifeste ne pointe pas dessus
+- `ANE_MODEL` reste obligatoire pour les smokes et la CLI provider-compatible
+- le runtime Apple reste mono-modele; certains switches demandent encore une action manuelle
+- les blocs `AUTO-SYNC` donnent le dernier etat automatise connu, pas l'etat live instantane
+- les fichiers chapitre doivent rester canoniques: `chapitre_01.md`, `chapitre_02.md`, etc.
+
+## Automation et supervision
+
+```bash
+python3 scripts/run_next_lots.py --lot full
+python3 scripts/run_next_lots.py --resume automation/state/next_lots_state.json
+python3 scripts/run_next_lots.py --lot tracking_sync --report-only
+python3 scripts/next_lots_tui.py --watch --interval 2
+python3 scripts/ops_tui.py --watch --interval 3
+```
+
+La supervision, les reports et la purge sont documentes dans [`docs/runbooks/AUTOMATION.md`](./docs/runbooks/AUTOMATION.md).
 
 ## Etat auto-synchronise
 <!-- AUTO-SYNC:ANE-README:START -->
-- dernier cycle automatise: 2026-03-14T14:03:06+00:00
-- reference locale actuelle: apple-coreml:qwen3.5-4b-onnx-q4f16
-- prochain lot utile: Reference locale reconfirmee; retablir le runtime des modeles provider_failed puis reprendre rewrite/repair sur les modeles bloques a gate.
+- dernier cycle automatise: 2026-03-23T21:34:05+00:00
+- reference locale actuelle: mistral:mistral-large-latest
+- prochain lot utile: Reference locale reconfirmee; retablir le runtime des modeles provider_failed avant de poursuivre.
 - lancer un cycle: `python3 scripts/run_next_lots.py --lot full`
+- checkpoint manuel en attente: Le runtime Apple sert `aucun modèle` au lieu de `qwen3-4b-instruct-2507-q4f16`.
 <!-- AUTO-SYNC:ANE-README:END -->
-<!-- CHANTIER:AUDIT START -->
-## Audit & Execution Plan (2026-03-10)
-
-### Snapshot
-- Priority: `P2`
-- Tech profile: `other`
-- Workflows: `yes`
-- Tests: `yes`
-- Debt markers: `23`
-- Source files: `18`
-
-### Corrections Prioritaires
-- [ ] Optimisation ciblée perf/maintenabilité
-- [ ] Ajouter/fiabiliser les commandes de vérification automatiques.
-- [ ] Clore les points bloquants avant optimisation avancée.
-
-### Optimisation
-- [ ] Identifier le hotspot principal et mesurer avant/après.
-- [ ] Réduire la complexité des modules les plus touchés.
-
-### Mémoire chantier
-- Control plane: `/Users/electron/.codex/memories/electron_rare_chantier`
-- Repo card: `/Users/electron/.codex/memories/electron_rare_chantier/REPOS/ai-novel-engine.md`
-
-<!-- CHANTIER:AUDIT END -->

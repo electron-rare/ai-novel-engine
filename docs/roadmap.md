@@ -1,31 +1,31 @@
 # Roadmap v2
 
-Roadmap courte et concrete, alignee sur l'etat reel du repo au 13 mars 2026.
+Roadmap courte et concrete, remise a niveau apres audit du 6 avril 2026.
 
-## Priorite 1 - Stabiliser la reprise
+## Priorite 1 - Remettre les points d'entree au propre
 
-- garder `automation/state/next_lots_state.json` sans checkpoint ambigu
-- garder `:8100` et `:8201` operationnels, puis retablir un vrai chemin Ollama CPU avant de rejouer `priority_models`
-- garder `apple-coreml:qwen3.5-4b-onnx-q4f16` comme reference provisoire tant qu'un rerun comparable ne la contredit pas
-- traiter le rerun `automation/reports/apple_rerun_7oY51o` comme une alerte de stabilite: la reference Apple n'est pas encore reconfirmee
-- ne plus laisser les docs perdre un resultat `accepted` lorsqu'un lot partiel plus recent tourne ensuite
+- garder un index doc vivant dans `docs/dev/README.md`
+- distinguer partout le chemin par defaut `:8100` du chemin alternatif `:8091`
+- eviter les contradictions entre historique Apple, `AUTO-SYNC` courant et reports les plus recents
 
-## Priorite 2 - Faire tomber les blockers reels
+## Priorite 2 - Assainir le workspace et le diagnostic local
 
-- sortir `ollama:qwen2.5:7b` de `outline_like`
-- faire disparaitre `truncated_ending` sur au moins une baseline
-- limiter les changements a `rewrite`, `repair` et leurs budgets tant qu'aucun autre blocker n'apparait
+- supprimer les doublons de chapitres non canoniques du type `chapitre_1.md`
+- faire remonter ces conflits plus tot dans `status`
+- clarifier les sorties de statut quand un dossier existe mais n'est pas encore exploitable
 
-## Priorite 3 - Resserer la matrice locale
+## Priorite 3 - Reprendre les reruns utiles
 
-- garder `apple-coreml:qwen2.5-0.5b-instruct-onnx` et `ollama:qwen2.5:1.5b` comme baselines vitesse ou regression
-- garder `stateful-mistral7b-instruct-int4-coreml` hors chemin critique tant qu'un besoin produit n'impose pas son retour
-- maintenir les modeles et le runtime Apple explicites dans chaque smoke et chaque doc
+- retablir les providers encore `provider_failed`
+- rejouer les lots utiles depuis `automation/state/next_lots_state.json` quand le runtime Apple et les providers distants sont prets
+- garder les modeles Apple et Ollama explicites dans les smokes et les reports
 
 ## Source de verite
 
-- contexte courant: [`CONTEXTE_PROJET_2026-03-14.md`](./CONTEXTE_PROJET_2026-03-14.md)
-- memoire de reprise: [`MEMOIRE_REPRISE_2026-03-14.md`](./MEMOIRE_REPRISE_2026-03-14.md)
+- index dev: [`dev/README.md`](./dev/README.md)
+- audit: [`CODE_AUDIT_2026-04-06.md`](./CODE_AUDIT_2026-04-06.md)
+- contexte courant: [`CONTEXTE_PROJET_2026-03-22.md`](./CONTEXTE_PROJET_2026-03-22.md)
+- memoire de reprise: [`MEMOIRE_REPRISE_2026-03-22.md`](./MEMOIRE_REPRISE_2026-03-22.md)
 - backlog actif: [`../TODO_ACTIVE.md`](../TODO_ACTIVE.md)
 - etat livre: [`../TODO_IMPLEMENTE.md`](../TODO_IMPLEMENTE.md)
-- ordre d'execution: [`EXECUTION_PLAN_2026-03-14.md`](./EXECUTION_PLAN_2026-03-14.md)
+- ordre d'execution: [`EXECUTION_PLAN_2026-03-22.md`](./EXECUTION_PLAN_2026-03-22.md)
